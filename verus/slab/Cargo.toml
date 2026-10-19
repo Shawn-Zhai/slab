@@ -1,0 +1,41 @@
+[package]
+
+name = "slab"
+# When releasing to crates.io:
+# - Update version number
+#   - README.md
+# - Update CHANGELOG.md
+# - Create git tag
+version = "0.4.12"
+authors = ["Carl Lerche <me@carllerche.com>"]
+edition = "2018"
+# Upstream: 1.51. The `vstd` crate (needed for the `verus!` macro) requires a recent toolchain.
+rust-version = "1.95"
+license = "MIT"
+description = "slab 0.4.12 (master @ 7d1d8ab) annotated for Verus; see README.md"
+repository = "https://github.com/tokio-rs/slab"
+keywords = ["slab", "allocator", "no_std"]
+categories = ["memory-management", "data-structures", "no-std"]
+exclude = ["/.*"]
+publish = false
+
+[features]
+std = ["vstd/std"]
+default = ["std"]
+
+[dependencies]
+serde = { version = "1.0.95", optional = true, default-features = false, features = ["alloc"] }
+# Only for the normal (non-Verus) build: provides the `verus!` macro, which erases the ghost
+# code, and the `vstd::pervasive` functions used by the code. Verification uses the `verus`
+# binary with its bundled vstd.
+vstd = { version = "=0.0.0-2026-05-06-1803", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_test = "1"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_keep_ghost)', 'cfg(verus_only)', 'cfg(docsrs)'] }

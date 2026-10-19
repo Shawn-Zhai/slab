@@ -1,0 +1,2755 @@
+# Diff of verus/slab/src against src/ (slab master @ 7d1d8ab, v0.4.12), generated 2026-10-16.
+# serde.rs and tests/ are unchanged. New files (spec.rs, std_ext.rs, verified_examples.rs) are shown in full.
+
+--- src/lib.rs
++++ verus/slab/src/lib.rs
+@@ -131,10 +131,29 @@
+ 
+ mod builder;
+ 
++/// Verus specification of `Slab` (ghost code; compiled only under Verus).
++#[cfg(verus_keep_ghost)]
++pub mod spec;
++#[cfg(verus_keep_ghost)]
++#[allow(unused_imports)]
++use crate::spec::*;
++
++/// Verified clients of the specification (never called; compiled only under Verus).
++#[cfg(verus_keep_ghost)]
++mod verified_examples;
++
++mod std_ext;
++use crate::std_ext::{mem_replace, slice_get_mut, vec_get_mut};
++
+ use alloc::vec::{self, Vec};
+ use core::iter::{self, FromIterator, FusedIterator};
+ use core::mem::MaybeUninit;
+ use core::{fmt, mem, ops, slice};
++use vstd::pervasive::{runtime_assert, unreached};
++#[allow(unused_imports)]
++use vstd::prelude::*;
++
++verus! {
+ 
+ /// Pre-allocated storage for a uniform data type
+ ///
+@@ -153,6 +172,11 @@
+     next: usize,
+ }
+ 
++} // verus!
++
++// TRUSTED (not verified): `Vec::clone_from` has no Verus specification, and Verus
++// verifies a trait impl as a whole.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> Clone for Slab<T>
+ where
+     T: Clone,
+@@ -172,8 +196,15 @@
+     }
+ }
+ 
++verus! {
++
+ impl<T> Default for Slab<T> {
+-    fn default() -> Self {
++    fn default() -> (slab: Self)
++        ensures
++            slab.wf(),
++            slab@ == Seq::<Option<T>>::empty(),
++            slab.vacant_list() == Seq::<usize>::empty(),
++    {
+         Slab::new()
+     }
+ }
+@@ -191,6 +222,10 @@
+     OverlappingIndices,
+ }
+ 
++} // verus!
++
++// TRUSTED (not verified): formatting is not supported by Verus.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl fmt::Display for GetDisjointMutError {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         let msg = match self {
+@@ -202,9 +237,13 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `std::error::Error` is not known to Verus.
+ #[cfg(feature = "std")]
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl std::error::Error for GetDisjointMutError {}
+ 
++verus! {
++
+ /// A handle to a vacant entry in a `Slab`.
+ ///
+ /// `VacantEntry` allows constructing values with the key that they will be
+@@ -233,18 +272,26 @@
+     key: usize,
+ }
+ 
++} // verus!
++
+ /// A consuming iterator over the values stored in a `Slab`
++// TRUSTED (not verified): wraps std iterator adapters that Verus does not specify.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ pub struct IntoIter<T> {
+     entries: iter::Enumerate<vec::IntoIter<Entry<T>>>,
+     len: usize,
+ }
+ 
+ /// An iterator over the values stored in the `Slab`
++// TRUSTED (not verified): wraps std iterator adapters that Verus does not specify.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ pub struct Iter<'a, T> {
+     entries: iter::Enumerate<slice::Iter<'a, Entry<T>>>,
+     len: usize,
+ }
+ 
++// TRUSTED (not verified): `Iter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> Clone for Iter<'_, T> {
+     fn clone(&self) -> Self {
+         Self {
+@@ -255,17 +302,23 @@
+ }
+ 
+ /// A mutable iterator over the values stored in the `Slab`
++// TRUSTED (not verified): wraps std iterator adapters that Verus does not specify.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ pub struct IterMut<'a, T> {
+     entries: iter::Enumerate<slice::IterMut<'a, Entry<T>>>,
+     len: usize,
+ }
+ 
+ /// A draining iterator for `Slab`
++// TRUSTED (not verified): wraps `vec::Drain`, which Verus does not specify.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ pub struct Drain<'a, T> {
+     inner: vec::Drain<'a, Entry<T>>,
+     len: usize,
+ }
+ 
++verus! {
++
+ #[derive(Clone)]
+ enum Entry<T> {
+     Vacant(usize),
+@@ -284,12 +337,21 @@
+     /// # use slab::*;
+     /// let slab: Slab<i32> = Slab::new();
+     /// ```
+-    pub const fn new() -> Self {
+-        Self {
++    pub const fn new() -> (slab: Self)
++        ensures
++            slab.wf(),
++            slab@ == Seq::<Option<T>>::empty(),
++            slab.vacant_list() == Seq::<usize>::empty(),
++    {
++        let slab = Self {
+             entries: Vec::new(),
+             next: 0,
+             len: 0,
++        };
++        proof {
++            slab.lemma_wf_intro(Seq::empty());
+         }
++        slab
+     }
+ 
+     /// Construct a new, empty `Slab` with the specified capacity.
+@@ -319,14 +381,29 @@
+     /// // ...but this may make the slab reallocate
+     /// slab.insert(11);
+     /// ```
+-    pub fn with_capacity(capacity: usize) -> Slab<T> {
+-        Slab {
++    pub fn with_capacity(capacity: usize) -> (slab: Slab<T>)
++        ensures
++            slab.wf(),
++            slab@ == Seq::<Option<T>>::empty(),
++            slab.vacant_list() == Seq::<usize>::empty(),
++    {
++        let slab = Slab {
+             entries: Vec::with_capacity(capacity),
+             next: 0,
+             len: 0,
++        };
++        proof {
++            slab.lemma_wf_intro(Seq::empty());
+         }
++        slab
+     }
++}
++
++} // verus!
+ 
++// TRUSTED (not verified): methods that need features Verus does not support (reason on each).
++#[cfg_attr(verus_keep_ghost, verifier::external)]
++impl<T> Slab<T> {
+     /// Return the number of values the slab can store without reallocating.
+     ///
+     /// # Examples
+@@ -336,6 +413,7 @@
+     /// let slab: Slab<i32> = Slab::with_capacity(10);
+     /// assert_eq!(slab.capacity(), 10);
+     /// ```
++    // TRUSTED (not verified): `Vec::capacity` has no Verus specification.
+     pub fn capacity(&self) -> usize {
+         self.entries.capacity()
+     }
+@@ -366,6 +444,7 @@
+     /// slab.reserve(10);
+     /// assert!(slab.capacity() >= 11);
+     /// ```
++    // TRUSTED (not verified): uses `capacity` (above).
+     pub fn reserve(&mut self, additional: usize) {
+         if self.capacity() - self.len >= additional {
+             return;
+@@ -400,6 +479,8 @@
+     /// slab.reserve_exact(10);
+     /// assert!(slab.capacity() >= 11);
+     /// ```
++    // TRUSTED (not verified): uses `capacity` and `Vec::reserve_exact`, which have no Verus
++    // specification.
+     pub fn reserve_exact(&mut self, additional: usize) {
+         if self.capacity() - self.len >= additional {
+             return;
+@@ -449,15 +530,57 @@
+     /// slab.shrink_to_fit();
+     /// assert!(slab.capacity() >= 3 && slab.capacity() < 10);
+     /// ```
++    // TRUSTED (not verified): `Vec::shrink_to_fit` has no Verus specification. Everything
++    // before that call was moved, unchanged, into the verified `remove_vacant_tail`.
+     pub fn shrink_to_fit(&mut self) {
++        self.remove_vacant_tail();
++        self.entries.shrink_to_fit();
++    }
++}
++
++verus! {
++
++impl<T> Slab<T> {
++    /// The part of `shrink_to_fit` before the reallocation, moved out of it so that Verus can
++    /// check it.
++    fn remove_vacant_tail(&mut self)
++        requires
++            old(self).wf(),
++        ensures
++            final(self).wf(),
++            final(self)@ == trim_vacant_tail(old(self)@),
++            final(self)@.len() == old(self)@.len() ==> final(self).vacant_list()
++                == old(self).vacant_list(),
++            final(self)@.len() < old(self)@.len() ==> final(self).vacant_list() == vacant_keys(
++                final(self)@,
++            ),
++    {
+         // Remove all vacant entries after the last occupied one, so that
+         // the capacity can be reduced to what is actually needed.
+         // If the slab is empty the vector can simply be cleared, but that
+         // optimization would not affect time complexity when T: Drop.
+         let len_before = self.entries.len();
+-        while let Some(&Entry::Vacant(_)) = self.entries.last() {
++        while matches!(self.entries.last(), Some(Entry::Vacant(_)))
++            invariant
++                self.entries@.len() <= len_before == old(self).entries@.len(),
++                self.entries@ == old(self).entries@.subrange(0, self.entries@.len() as int),
++                trim_vacant_tail(self@) == trim_vacant_tail(old(self)@),
++                self.len == old(self).len,
++                self.next == old(self).next,
++            decreases self.entries@.len(),
++        {
++            proof {
++                lemma_view_drop_last(self.entries@);
++            }
+             self.entries.pop();
+         }
++        proof {
++            lemma_num_occupied_trim(old(self)@);
++            if self.entries@.len() == len_before {
++                assert(self.entries@ =~= old(self).entries@);
++                self.lemma_wf_intro(old(self).vacant_list());
++            }
++        }
+ 
+         // Removing entries breaks the list of vacant entries,
+         // so it must be repaired
+@@ -472,35 +595,114 @@
+             // Checking for that unlikely scenario of this infrequently called
+             // is not worth the code complexity.
+         }
+-
+-        self.entries.shrink_to_fit();
+     }
+ 
+     /// Iterate through all entries to recreate and repair the vacant list.
+     /// self.len must be correct and is not modified.
+-    fn recreate_vacant_list(&mut self) {
++    fn recreate_vacant_list(&mut self)
++        requires
++            old(self).len == num_occupied(old(self)@),
++        ensures
++            final(self).wf(),
++            final(self)@ == old(self)@,
++            final(self).vacant_list() == vacant_keys(old(self)@),
++    {
++        let ghost slots = self@;
++        let ghost n = self.entries@.len() as int;
++        proof {
++            self.lemma_len_bound();
++            lemma_num_occupied_le(slots);
++            lemma_vacant_keys_from(slots, 0);
++            assert(slots.subrange(0, n) =~= slots);
++        }
+         self.next = self.entries.len();
+         // We can stop once we've found all vacant entries
+         let mut remaining_vacant = self.entries.len() - self.len;
+         if remaining_vacant == 0 {
++            proof {
++                lemma_num_occupied_all_some(slots);
++                lemma_vacant_keys_from_skip(slots, 0, n);
++                assert forall|k: int| 0 <= k < n implies !(#[trigger] self.entries@[k] is Vacant) by {
++                    assert(slots[k] is Some);
++                }
++                self.lemma_wf_intro(Seq::empty());
++            }
+             return;
+         }
+ 
+         // Iterate in reverse order so that lower keys are at the start of
+         // the vacant list. This way future shrinks are more likely to be
+         // able to remove vacant entries.
+-        for (i, entry) in self.entries.iter_mut().enumerate().rev() {
+-            if let Entry::Vacant(ref mut next) = *entry {
++        let mut i = self.entries.len();
++        while i > 0
++            invariant_except_break
++                remaining_vacant > 0,
++                remaining_vacant == i - num_occupied(slots.subrange(0, i as int)),
++            invariant
++                0 <= i <= n <= usize::MAX,
++                n == old(self).entries@.len(),
++                self.entries@.len() == n,
++                self@ == slots,
++                slots == old(self)@,
++                self.len == old(self).len,
++                is_vacant_chain(self.entries@, self.next, vacant_keys_from(slots, i as int)),
++            ensures
++                is_vacant_chain(self.entries@, self.next, vacant_keys(slots)),
++            decreases i,
++        {
++            i -= 1;
++            let ghost entries0 = self.entries@;
++            let ghost next0 = self.next;
++            proof {
++                assert(slots.subrange(0, i + 1).drop_last() =~= slots.subrange(0, i as int));
++                lemma_vacant_keys_from(slots, i + 1);
++            }
++            if let Entry::Vacant(next) = &mut self.entries[i] {
+                 *next = self.next;
+                 self.next = i;
+                 remaining_vacant -= 1;
++                proof {
++                    let rest = vacant_keys_from(slots, i + 1);
++                    assert(slots[i as int] is None);
++                    assert(vacant_keys_from(slots, i as int) == seq![i as usize] + rest);
++                    assert forall|j: int| 0 <= j < rest.len() implies #[trigger] rest[j] != i by {}
++                    lemma_vacant_chain_prepend(entries0, next0, rest, i);
++                    assert(self.entries@ == entries0.update(i as int, Entry::Vacant(next0)));
++                }
+                 if remaining_vacant == 0 {
++                    proof {
++                        let prefix = slots.subrange(0, i as int);
++                        lemma_num_occupied_all_some(prefix);
++                        assert forall|k: int| 0 <= k < i implies (#[trigger] slots[k]) is Some by {
++                            assert(prefix[k] == slots[k]);
++                        }
++                        lemma_vacant_keys_from_skip(slots, 0, i as int);
++                    }
+                     break;
+                 }
++            } else {
++                proof {
++                    assert(slots[i as int] is Some);
++                }
++            }
++        }
++        proof {
++            let list = vacant_keys(slots);
++            assert forall|k: int| 0 <= k < n && (#[trigger] self.entries@[k]) is Vacant implies list.contains(
++                k as usize,
++            ) by {
++                assert(slots[k] is None);
+             }
++            self.lemma_wf_intro(list);
+         }
+     }
++}
+ 
++} // verus!
++
++// TRUSTED (not verified): a method that needs features Verus does not support (reason below).
++#[cfg_attr(verus_keep_ghost, verifier::external)]
++impl<T> Slab<T> {
+     /// Reduce the capacity as much as possible, changing the key for elements when necessary.
+     ///
+     /// To allow updating references to the elements which must be moved to a new key,
+@@ -542,6 +744,9 @@
+     /// slab.compact(|&mut value, from, to| false);
+     /// assert_eq!(slab.iter().next(), Some((b, &'b')));
+     /// ```
++    // TRUSTED (not verified): relies on a `Drop` guard for unwinding, `mem::forget` and
++    // `Vec::shrink_to_fit`, none of which Verus supports. It calls the verified
++    // `recreate_vacant_list`.
+     pub fn compact<F>(&mut self, mut rekey: F)
+     where
+         F: FnMut(&mut T, usize, usize) -> bool,
+@@ -596,7 +801,11 @@
+         // Normal cleanup is not necessary
+         mem::forget(guard);
+     }
++}
+ 
++verus! {
++
++impl<T> Slab<T> {
+     /// Clear the slab of all values.
+     ///
+     /// # Examples
+@@ -612,10 +821,18 @@
+     /// slab.clear();
+     /// assert!(slab.is_empty());
+     /// ```
+-    pub fn clear(&mut self) {
++    pub fn clear(&mut self)
++        ensures
++            final(self).wf(),
++            final(self)@ == Seq::<Option<T>>::empty(),
++            final(self).vacant_list() == Seq::<usize>::empty(),
++    {
+         self.entries.clear();
+         self.len = 0;
+         self.next = 0;
++        proof {
++            self.lemma_wf_intro(Seq::empty());
++        }
+     }
+ 
+     /// Return the number of stored values.
+@@ -632,7 +849,12 @@
+     ///
+     /// assert_eq!(3, slab.len());
+     /// ```
+-    pub fn len(&self) -> usize {
++    pub fn len(&self) -> (len: usize)
++        requires
++            self.wf(),
++        ensures
++            len == num_occupied(self@),
++    {
+         self.len
+     }
+ 
+@@ -648,10 +870,21 @@
+     /// slab.insert(1);
+     /// assert!(!slab.is_empty());
+     /// ```
+-    pub fn is_empty(&self) -> bool {
++    pub fn is_empty(&self) -> (empty: bool)
++        requires
++            self.wf(),
++        ensures
++            empty == (num_occupied(self@) == 0),
++    {
+         self.len == 0
+     }
++}
+ 
++} // verus!
++
++// TRUSTED (not verified): methods that need features Verus does not support (reason on each).
++#[cfg_attr(verus_keep_ghost, verifier::external)]
++impl<T> Slab<T> {
+     /// Return an iterator over the slab.
+     ///
+     /// This function should generally be **avoided** as it is not efficient.
+@@ -676,6 +909,7 @@
+     /// assert_eq!(iterator.next(), Some((2, &2)));
+     /// assert_eq!(iterator.next(), None);
+     /// ```
++    // TRUSTED (not verified): `Iter` is not verified.
+     pub fn iter(&self) -> Iter<'_, T> {
+         Iter {
+             entries: self.entries.iter().enumerate(),
+@@ -708,13 +942,18 @@
+     /// assert_eq!(slab[key1], 2);
+     /// assert_eq!(slab[key2], 1);
+     /// ```
++    // TRUSTED (not verified): `IterMut` is not verified.
+     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
+         IterMut {
+             entries: self.entries.iter_mut().enumerate(),
+             len: self.len,
+         }
+     }
++}
++
++verus! {
+ 
++impl<T> Slab<T> {
+     /// Return a reference to the value associated with the given key.
+     ///
+     /// If the given key is not associated with a value, then `None` is
+@@ -730,7 +969,14 @@
+     /// assert_eq!(slab.get(key), Some(&"hello"));
+     /// assert_eq!(slab.get(123), None);
+     /// ```
+-    pub fn get(&self, key: usize) -> Option<&T> {
++    pub fn get(&self, key: usize) -> (value: Option<&T>)
++        ensures
++            value == if self.spec_contains(key) {
++                Some(&self@[key as int]->Some_0)
++            } else {
++                None::<&T>
++            },
++    {
+         match self.entries.get(key) {
+             Some(Entry::Occupied(val)) => Some(val),
+             _ => None,
+@@ -754,9 +1000,26 @@
+     /// assert_eq!(slab[key], "world");
+     /// assert_eq!(slab.get_mut(123), None);
+     /// ```
+-    pub fn get_mut(&mut self, key: usize) -> Option<&mut T> {
+-        match self.entries.get_mut(key) {
+-            Some(&mut Entry::Occupied(ref mut val)) => Some(val),
++    pub fn get_mut(&mut self, key: usize) -> (value: Option<&mut T>)
++        requires
++            old(self).wf(),
++        ensures
++            final(self).wf(),
++            final(self).vacant_list() == old(self).vacant_list(),
++            match value {
++                Some(value) => {
++                    &&& old(self).spec_contains(key)
++                    &&& *value == old(self)@[key as int]->Some_0
++                    &&& final(self)@ == old(self)@.update(key as int, Some(*final(value)))
++                },
++                None => !old(self).spec_contains(key) && final(self)@ == old(self)@,
++            },
++    {
++        proof {
++            self.lemma_same_shape_preserves_wf();
++        }
++        match vec_get_mut(&mut self.entries, key) {
++            Some(Entry::Occupied(val)) => Some(val),
+             _ => None,
+         }
+     }
+@@ -788,34 +1051,67 @@
+     /// assert_eq!(slab[key1], 2);
+     /// assert_eq!(slab[key2], 1);
+     /// ```
+-    pub fn get2_mut(&mut self, key1: usize, key2: usize) -> Option<(&mut T, &mut T)> {
+-        assert!(key1 != key2);
++    pub fn get2_mut(&mut self, key1: usize, key2: usize) -> (values: Option<(&mut T, &mut T)>)
++        requires
++            old(self).wf(),
++            key1 != key2,
++            // `split_at_mut` panics past the end, so the larger key must not exceed the number of slots.
++            key1 <= old(self)@.len(),
++            key2 <= old(self)@.len(),
++        ensures
++            final(self).wf(),
++            final(self).vacant_list() == old(self).vacant_list(),
++            match values {
++                Some((value1, value2)) => {
++                    &&& old(self).spec_contains(key1)
++                    &&& old(self).spec_contains(key2)
++                    &&& *value1 == old(self)@[key1 as int]->Some_0
++                    &&& *value2 == old(self)@[key2 as int]->Some_0
++                    &&& final(self)@ == old(self)@.update(key1 as int, Some(*final(value1))).update(
++                        key2 as int,
++                        Some(*final(value2)),
++                    )
++                },
++                None => {
++                    &&& !(old(self).spec_contains(key1) && old(self).spec_contains(key2))
++                    &&& final(self)@ == old(self)@
++                },
++            },
++    {
++        runtime_assert(key1 != key2);
++        proof {
++            self.lemma_same_shape_preserves_wf();
++        }
+ 
+         let (entry1, entry2);
+ 
+         if key1 > key2 {
+-            let (slice1, slice2) = self.entries.split_at_mut(key1);
+-            entry1 = slice2.get_mut(0);
+-            entry2 = slice1.get_mut(key2);
++            let (slice1, slice2) = self.entries.as_mut_slice().split_at_mut(key1);
++            entry1 = slice_get_mut(slice2, 0);
++            entry2 = slice_get_mut(slice1, key2);
+         } else {
+-            let (slice1, slice2) = self.entries.split_at_mut(key2);
+-            entry1 = slice1.get_mut(key1);
+-            entry2 = slice2.get_mut(0);
++            let (slice1, slice2) = self.entries.as_mut_slice().split_at_mut(key2);
++            entry1 = slice_get_mut(slice1, key1);
++            entry2 = slice_get_mut(slice2, 0);
+         }
+ 
+         match (entry1, entry2) {
+-            (
+-                Some(&mut Entry::Occupied(ref mut val1)),
+-                Some(&mut Entry::Occupied(ref mut val2)),
+-            ) => Some((val1, val2)),
++            (Some(Entry::Occupied(val1)), Some(Entry::Occupied(val2))) => Some((val1, val2)),
+             _ => None,
+         }
+     }
++}
+ 
++} // verus!
++
++// TRUSTED (not verified): methods that need features Verus does not support (reason on each).
++#[cfg_attr(verus_keep_ghost, verifier::external)]
++impl<T> Slab<T> {
+     /// Returns mutable references to many indices at once.
+     ///
+     /// Returns [`GetDisjointMutError`] if the indices are out of bounds,
+     /// overlapping, or vacant.
++    // TRUSTED (not verified): raw pointers and `MaybeUninit`.
+     pub fn get_disjoint_mut<const N: usize>(
+         &mut self,
+         keys: [usize; N],
+@@ -878,6 +1174,7 @@
+     ///     assert_eq!(slab.get_unchecked(key), &2);
+     /// }
+     /// ```
++    // TRUSTED (not verified): unchecked access (`<[T]>::get_unchecked`).
+     pub unsafe fn get_unchecked(&self, key: usize) -> &T {
+         match *self.entries.get_unchecked(key) {
+             Entry::Occupied(ref val) => val,
+@@ -910,6 +1207,7 @@
+     ///
+     /// assert_eq!(slab[key], 13);
+     /// ```
++    // TRUSTED (not verified): unchecked access (`<[T]>::get_unchecked_mut`).
+     pub unsafe fn get_unchecked_mut(&mut self, key: usize) -> &mut T {
+         match *self.entries.get_unchecked_mut(key) {
+             Entry::Occupied(ref mut val) => val,
+@@ -944,6 +1242,7 @@
+     /// assert_eq!(slab[key1], 2);
+     /// assert_eq!(slab[key2], 1);
+     /// ```
++    // TRUSTED (not verified): raw pointers.
+     pub unsafe fn get2_unchecked_mut(&mut self, key1: usize, key2: usize) -> (&mut T, &mut T) {
+         debug_assert_ne!(key1, key2);
+         let ptr = self.entries.as_mut_ptr();
+@@ -992,6 +1291,7 @@
+     /// slab.key_of(bad); // this will panic
+     /// unreachable!();
+     /// ```
++    // TRUSTED (not verified): pointer-to-integer casts and `mem::size_of`.
+     #[track_caller]
+     pub fn key_of(&self, present_element: &T) -> usize {
+         let element_ptr = present_element as *const T as usize;
+@@ -1008,7 +1308,11 @@
+         // The reference cannot point to a vacant entry, because then it would not be valid
+         key
+     }
++}
++
++verus! {
+ 
++impl<T> Slab<T> {
+     /// Insert a value in the slab, returning key assigned to the value.
+     ///
+     /// The returned key can later be used to retrieve or remove the value using indexed
+@@ -1027,7 +1331,12 @@
+     /// let key = slab.insert("hello");
+     /// assert_eq!(slab[key], "hello");
+     /// ```
+-    pub fn insert(&mut self, val: T) -> usize {
++    pub fn insert(&mut self, val: T) -> (key: usize)
++        requires
++            old(self).wf(),
++        ensures
++            Self::insert_post(*old(self), *final(self), key, val),
++    {
+         let key = self.next;
+ 
+         self.insert_at(key, val);
+@@ -1055,7 +1364,12 @@
+     /// slab.remove(0);
+     /// assert_eq!(slab.vacant_key(), 0);
+     /// ```
+-    pub fn vacant_key(&self) -> usize {
++    pub fn vacant_key(&self) -> (key: usize)
++        requires
++            self.wf(),
++        ensures
++            key == self.next_key(),
++    {
+         self.next
+     }
+ 
+@@ -1082,26 +1396,69 @@
+     /// assert_eq!(hello, slab[hello].0);
+     /// assert_eq!("hello", slab[hello].1);
+     /// ```
+-    pub fn vacant_entry(&mut self) -> VacantEntry<'_, T> {
++    pub fn vacant_entry(&mut self) -> (entry: VacantEntry<'_, T>)
++        requires
++            old(self).wf(),
++        ensures
++            entry.wf(),
++            entry.slab() == *old(self),
++            entry.final_slab() == *final(self),
++            entry.spec_key() == old(self).next_key(),
++    {
+         VacantEntry {
+             key: self.next,
+             slab: self,
+         }
+     }
+ 
+-    fn insert_at(&mut self, key: usize, val: T) {
+-        self.len += 1;
+-
++    fn insert_at(&mut self, key: usize, val: T)
++        requires
++            old(self).wf(),
++            key == old(self).next_key(),
++        ensures
++            Self::insert_post(*old(self), *final(self), key, val),
++    {
++        let ghost pre = *self;
++        let ghost list = self.vacant_list();
++        proof {
++            self.lemma_vacant_list();
++            if list.len() > 0 {
++                lemma_num_occupied_lt(self@, key as int);
++                lemma_vacant_list_pop(pre.entries@, pre.next, list, val);
++            }
++        }
+         if key == self.entries.len() {
+             self.entries.push(Entry::Occupied(val));
++            proof {
++                self.lemma_len_bound();
++            }
+             self.next = key + 1;
+         } else {
+             self.next = match self.entries.get(key) {
+-                Some(&Entry::Vacant(next)) => next,
+-                _ => unreachable!(),
++                Some(Entry::Vacant(next)) => *next,
++                _ => unreached(),
+             };
+             self.entries[key] = Entry::Occupied(val);
+         }
++        // Moved after the branch (upstream increments first): the branch does not read `len`.
++        self.len += 1;
++        proof {
++            if list.len() > 0 {
++                lemma_view_update(pre.entries@, key as int, Entry::Occupied(val));
++                lemma_num_occupied_update(pre@, key as int, Some(val));
++                self.lemma_wf_intro(list.drop_first());
++            } else {
++                lemma_view_push(pre.entries@, Entry::Occupied(val));
++                assert(self@.drop_last() =~= pre@);
++                assert forall|k: int|
++                    0 <= k < self.entries@.len() implies !(#[trigger] self.entries@[k] is Vacant) by {
++                    if k < pre.entries@.len() && pre.entries@[k] is Vacant {
++                        assert(list.contains(k as usize));
++                    }
++                }
++                self.lemma_wf_intro(Seq::empty());
++            }
++        }
+     }
+ 
+     /// Tries to remove the value associated with the given key,
+@@ -1121,8 +1478,24 @@
+     /// assert_eq!(slab.try_remove(hello), Some("hello"));
+     /// assert!(!slab.contains(hello));
+     /// ```
+-    pub fn try_remove(&mut self, key: usize) -> Option<T> {
+-        if let Some(entry) = self.entries.get_mut(key) {
++    pub fn try_remove(&mut self, key: usize) -> (value: Option<T>)
++        requires
++            old(self).wf(),
++        ensures
++            match value {
++                Some(value) => Self::remove_post(*old(self), *final(self), key, value),
++                None => !old(self).spec_contains(key) && Self::unchanged(*old(self), *final(self)),
++            },
++    {
++        let ghost pre = *self;
++        let ghost list = self.vacant_list();
++        proof {
++            self.lemma_len_bound();
++            if self.spec_contains(key) {
++                lemma_num_occupied_pos(self@, key as int);
++            }
++        }
++        if let Some(entry) = vec_get_mut(&mut self.entries, key) {
+             if let Entry::Occupied(_) = entry {
+                 // Here we use `std::mem::replace` to move the entry's value to
+                 // the stack and set the entry as vacant in one shot. By doing
+@@ -1130,16 +1503,26 @@
+                 // able to elide copying the bytes to the stack if the value
+                 // turns out to be unused.
+ 
+-                let val = match core::mem::replace(entry, Entry::Vacant(self.next)) {
++                let val = match mem_replace(entry, Entry::Vacant(self.next)) {
+                     Entry::Occupied(val) => val, // confirmed occupied above
+-                    _ => unreachable!(),
++                    _ => unreached(),
+                 };
+ 
+                 self.len -= 1;
+                 self.next = key;
+-                return val.into();
++                proof {
++                    lemma_view_update(pre.entries@, key as int, Entry::Vacant(pre.next));
++                    lemma_num_occupied_update(pre@, key as int, None);
++                    lemma_vacant_list_push(pre.entries@, pre.next, list, key);
++                    self.lemma_wf_intro(seq![key] + list);
++                }
++                return Some(val);
+             }
+         }
++        proof {
++            assert(self.entries@ =~= pre.entries@);
++            self.lemma_wf_intro(list);
++        }
+         None
+     }
+ 
+@@ -1164,7 +1547,13 @@
+     /// assert!(!slab.contains(hello));
+     /// ```
+     #[track_caller]
+-    pub fn remove(&mut self, key: usize) -> T {
++    pub fn remove(&mut self, key: usize) -> (value: T)
++        requires
++            old(self).wf(),
++            old(self).spec_contains(key),
++        ensures
++            Self::remove_post(*old(self), *final(self), key, value),
++    {
+         self.try_remove(key).expect("invalid key")
+     }
+ 
+@@ -1183,8 +1572,11 @@
+     ///
+     /// assert!(!slab.contains(hello));
+     /// ```
+-    pub fn contains(&self, key: usize) -> bool {
+-        matches!(self.entries.get(key), Some(&Entry::Occupied(_)))
++    pub fn contains(&self, key: usize) -> (contains: bool)
++        ensures
++            contains == self.spec_contains(key),
++    {
++        matches!(self.entries.get(key), Some(Entry::Occupied(_)))
+     }
+ 
+     /// Retain only the elements specified by the predicate.
+@@ -1214,19 +1606,94 @@
+     pub fn retain<F>(&mut self, mut f: F)
+     where
+         F: FnMut(usize, &mut T) -> bool,
++        requires
++            old(self).wf(),
++            forall|key: usize, value: &mut T| f.requires((key, value)),
++        ensures
++            final(self).wf(),
++            final(self)@.len() == old(self)@.len(),
++            forall|k: int|
++                0 <= k < old(self)@.len() && (#[trigger] old(self)@[k]) is None ==> final(self)@[k] is None,
++            forall|k: int|
++                #![trigger final(self)@[k]]
++                0 <= k < old(self)@.len() && old(self)@[k] is Some ==> retain_step(
++                    f,
++                    k as usize,
++                    old(self)@[k]->Some_0,
++                    final(self)@[k],
++                ),
++            final(self).vacant_list() == removed_keys_desc(
++                old(self)@,
++                final(self)@,
++                old(self)@.len() as int,
++            ) + old(self).vacant_list(),
+     {
+-        for i in 0..self.entries.len() {
++        let ghost f0 = f;
++        let ghost pre = *self;
++        proof {
++            self.lemma_len_bound();
++            assert(removed_keys_desc(pre@, self@, 0) + pre.vacant_list() =~= pre.vacant_list());
++        }
++        for i in iter: 0..self.entries.len()
++            invariant
++                iter.end == pre@.len(),
++                f == f0,
++                forall|key: usize, value: &mut T| f.requires((key, value)),
++                self.wf(),
++                self@.len() == pre@.len(),
++                forall|k: int| i <= k < pre@.len() ==> (#[trigger] self@[k]) == pre@[k],
++                forall|k: int| 0 <= k < i && (#[trigger] pre@[k]) is None ==> self@[k] is None,
++                forall|k: int|
++                    0 <= k < i && pre@[k] is Some ==> #[trigger] retain_step(
++                        f,
++                        k as usize,
++                        pre@[k]->Some_0,
++                        self@[k],
++                    ),
++                self.vacant_list() == removed_keys_desc(pre@, self@, i as int) + pre.vacant_list(),
++        {
++            let ghost cur = *self;
++            proof {
++                self.lemma_len_bound();
++                cur.lemma_same_shape_preserves_wf();
++            }
+             let keep = match self.entries[i] {
+                 Entry::Occupied(ref mut v) => f(i, v),
+                 _ => true,
+             };
++            proof {
++                assert(same_shape(cur, *self));
++                assert(self.wf() && self.vacant_list() == cur.vacant_list());
++            }
+ 
+             if !keep {
+                 self.remove(i);
+             }
++            proof {
++                if pre@[i as int] is Some {
++                    assert(retain_step(f, i, pre@[i as int]->Some_0, self@[i as int]));
++                }
++                lemma_removed_keys_desc_prefix(pre@, cur@, self@, i as int);
++                if cur@[i as int] is Some && !keep {
++                    assert(removed_keys_desc(pre@, self@, i + 1) == seq![i as usize]
++                        + removed_keys_desc(pre@, self@, i as int));
++                    assert(seq![i as usize] + (removed_keys_desc(pre@, cur@, i as int)
++                        + pre.vacant_list()) =~= (seq![i as usize] + removed_keys_desc(
++                        pre@,
++                        cur@,
++                        i as int,
++                    )) + pre.vacant_list());
++                }
++            }
+         }
+     }
++}
++
++} // verus!
+ 
++// TRUSTED (not verified): a method that needs features Verus does not support (reason below).
++#[cfg_attr(verus_keep_ghost, verifier::external)]
++impl<T> Slab<T> {
+     /// Return a draining iterator that removes all elements from the slab and
+     /// yields the removed items.
+     ///
+@@ -1254,6 +1721,7 @@
+     ///
+     /// assert!(slab.is_empty());
+     /// ```
++    // TRUSTED (not verified): `Vec::drain` has no Verus specification.
+     pub fn drain(&mut self) -> Drain<'_, T> {
+         let old_len = self.len;
+         self.len = 0;
+@@ -1265,18 +1733,34 @@
+     }
+ }
+ 
++verus! {
++
++#[cfg(verus_keep_ghost)] // ghost-only: vstd's `std_specs` exist only under Verus
++impl<T> vstd::std_specs::core::IndexSpecImpl<usize> for Slab<T> {
++    /// `slab[key]` requires `key` to be associated with a value (it panics otherwise).
++    open spec fn index_req(&self, key: &usize) -> bool {
++        self.spec_contains(*key)
++    }
++}
++
+ impl<T> ops::Index<usize> for Slab<T> {
+     type Output = T;
+ 
+     #[track_caller]
+-    fn index(&self, key: usize) -> &T {
+-        match self.entries.get(key) {
+-            Some(Entry::Occupied(v)) => v,
+-            _ => panic!("invalid key"),
+-        }
++    fn index(&self, key: usize) -> (value: &T)
++        ensures
++            *value == self@[key as int]->Some_0,
++    {
++        // Upstream: `match self.entries.get(key) { Some(Entry::Occupied(v)) => v, _ => panic!("invalid key") }`.
++        self.get(key).expect("invalid key")
+     }
+ }
+ 
++} // verus!
++
++// TRUSTED (not verified): `index_mut` panics on a vacant key, and the `IndexMut`
++// specification in vstd admits no precondition that would rule this out.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> ops::IndexMut<usize> for Slab<T> {
+     #[track_caller]
+     fn index_mut(&mut self, key: usize) -> &mut T {
+@@ -1287,6 +1771,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `IntoIter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> IntoIterator for Slab<T> {
+     type Item = (usize, T);
+     type IntoIter = IntoIter<T>;
+@@ -1299,6 +1785,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `Iter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<'a, T> IntoIterator for &'a Slab<T> {
+     type Item = (usize, &'a T);
+     type IntoIter = Iter<'a, T>;
+@@ -1308,6 +1796,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `IterMut` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<'a, T> IntoIterator for &'a mut Slab<T> {
+     type Item = (usize, &'a mut T);
+     type IntoIter = IterMut<'a, T>;
+@@ -1347,6 +1837,9 @@
+ /// assert_eq!(slab.len(), 3);
+ /// assert_eq!(slab[10], 'd');
+ /// ```
++// TRUSTED (not verified): iterating over an arbitrary `IntoIterator` (and its `size_hint`)
++// is not supported by Verus. The `Builder` it drives is verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> FromIterator<(usize, T)> for Slab<T> {
+     fn from_iter<I>(iterable: I) -> Self
+     where
+@@ -1362,6 +1855,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): formatting is not supported by Verus.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> fmt::Debug for Slab<T>
+ where
+     T: fmt::Debug,
+@@ -1378,6 +1873,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): formatting is not supported by Verus.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> fmt::Debug for IntoIter<T>
+ where
+     T: fmt::Debug,
+@@ -1389,6 +1886,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): formatting is not supported by Verus.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> fmt::Debug for Iter<'_, T>
+ where
+     T: fmt::Debug,
+@@ -1400,6 +1899,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): formatting is not supported by Verus.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> fmt::Debug for IterMut<'_, T>
+ where
+     T: fmt::Debug,
+@@ -1411,12 +1912,16 @@
+     }
+ }
+ 
++// TRUSTED (not verified): formatting is not supported by Verus.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> fmt::Debug for Drain<'_, T> {
+     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+         fmt.debug_struct("Drain").finish()
+     }
+ }
+ 
++verus! {
++
+ // ===== VacantEntry =====
+ 
+ impl<'a, T> VacantEntry<'a, T> {
+@@ -1442,12 +1947,22 @@
+     /// assert_eq!(hello, slab[hello].0);
+     /// assert_eq!("hello", slab[hello].1);
+     /// ```
+-    pub fn insert(self, val: T) -> &'a mut T {
++    pub fn insert(self, val: T) -> (value: &'a mut T)
++        requires
++            self.wf(),
++        ensures
++            *value == val,
++            Slab::insert_post(self.slab(), self.final_slab(), self.spec_key(), *final(value)),
++    {
++        let ghost pre = *self.slab;
+         self.slab.insert_at(self.key, val);
++        proof {
++            Slab::<T>::lemma_insert_then_set(pre, *self.slab, self.key, val);
++        }
+ 
+-        match self.slab.entries.get_mut(self.key) {
+-            Some(&mut Entry::Occupied(ref mut v)) => v,
+-            _ => unreachable!(),
++        match vec_get_mut(&mut self.slab.entries, self.key) {
++            Some(Entry::Occupied(v)) => v,
++            _ => unreached(),
+         }
+     }
+ 
+@@ -1472,13 +1987,20 @@
+     /// assert_eq!(hello, slab[hello].0);
+     /// assert_eq!("hello", slab[hello].1);
+     /// ```
+-    pub fn key(&self) -> usize {
++    pub fn key(&self) -> (key: usize)
++        ensures
++            key == self.spec_key(),
++    {
+         self.key
+     }
+ }
+ 
++} // verus!
++
+ // ===== IntoIter =====
+ 
++// TRUSTED (not verified): `IntoIter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> Iterator for IntoIter<T> {
+     type Item = (usize, T);
+ 
+@@ -1499,6 +2021,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `IntoIter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> DoubleEndedIterator for IntoIter<T> {
+     fn next_back(&mut self) -> Option<Self::Item> {
+         while let Some((key, entry)) = self.entries.next_back() {
+@@ -1513,16 +2037,22 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `IntoIter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> ExactSizeIterator for IntoIter<T> {
+     fn len(&self) -> usize {
+         self.len
+     }
+ }
+ 
++// TRUSTED (not verified): `IntoIter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> FusedIterator for IntoIter<T> {}
+ 
+ // ===== Iter =====
+ 
++// TRUSTED (not verified): `Iter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<'a, T> Iterator for Iter<'a, T> {
+     type Item = (usize, &'a T);
+ 
+@@ -1543,6 +2073,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `Iter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> DoubleEndedIterator for Iter<'_, T> {
+     fn next_back(&mut self) -> Option<Self::Item> {
+         while let Some((key, entry)) = self.entries.next_back() {
+@@ -1557,16 +2089,22 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `Iter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> ExactSizeIterator for Iter<'_, T> {
+     fn len(&self) -> usize {
+         self.len
+     }
+ }
+ 
++// TRUSTED (not verified): `Iter` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> FusedIterator for Iter<'_, T> {}
+ 
+ // ===== IterMut =====
+ 
++// TRUSTED (not verified): `IterMut` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<'a, T> Iterator for IterMut<'a, T> {
+     type Item = (usize, &'a mut T);
+ 
+@@ -1587,6 +2125,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `IterMut` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> DoubleEndedIterator for IterMut<'_, T> {
+     fn next_back(&mut self) -> Option<Self::Item> {
+         while let Some((key, entry)) = self.entries.next_back() {
+@@ -1601,16 +2141,22 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `IterMut` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> ExactSizeIterator for IterMut<'_, T> {
+     fn len(&self) -> usize {
+         self.len
+     }
+ }
+ 
++// TRUSTED (not verified): `IterMut` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> FusedIterator for IterMut<'_, T> {}
+ 
+ // ===== Drain =====
+ 
++// TRUSTED (not verified): `Drain` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> Iterator for Drain<'_, T> {
+     type Item = T;
+ 
+@@ -1631,6 +2177,8 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `Drain` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> DoubleEndedIterator for Drain<'_, T> {
+     fn next_back(&mut self) -> Option<Self::Item> {
+         while let Some(entry) = self.inner.next_back() {
+@@ -1645,10 +2193,14 @@
+     }
+ }
+ 
++// TRUSTED (not verified): `Drain` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> ExactSizeIterator for Drain<'_, T> {
+     fn len(&self) -> usize {
+         self.len
+     }
+ }
+ 
++// TRUSTED (not verified): `Drain` is not verified.
++#[cfg_attr(verus_keep_ghost, verifier::external)]
+ impl<T> FusedIterator for Drain<'_, T> {}
+--- src/builder.rs
++++ verus/slab/src/builder.rs
+@@ -1,4 +1,12 @@
+ use crate::{Entry, Slab};
++#[cfg(verus_keep_ghost)]
++#[allow(unused_imports)]
++use crate::spec::*;
++use vstd::pervasive::unreached;
++#[allow(unused_imports)]
++use vstd::prelude::*;
++
++verus! {
+ 
+ // Building `Slab` from pairs (usize, T).
+ pub(crate) struct Builder<T> {
+@@ -7,57 +15,316 @@
+     first_vacant_index: Option<usize>,
+ }
+ 
++/// `n` vacant slots.
++pub(crate) open spec fn vacant_slots<T>(n: nat) -> Seq<Option<T>> {
++    Seq::new(n, |_i: int| None::<T>)
++}
++
++/// The slots after `pair(key, value)`: the value goes to slot `key`, after padding with
++/// vacant slots if `key` is past the end.
++pub(crate) open spec fn pair_slots<T>(slots: Seq<Option<T>>, key: usize, value: T) -> Seq<
++    Option<T>,
++> {
++    if key < slots.len() {
++        slots.update(key as int, Some(value))
++    } else {
++        slots + vacant_slots((key - slots.len()) as nat) + seq![Some(value)]
++    }
++}
++
++/// While the vacant list is not broken, the vacant entries are exactly the holes that `pair`
++/// inserted. Listed in increasing order (`vacant_keys`), they form a chain from `slab.next`
++/// down to `first_vacant_index`, each hole linking to the one before it; `build` sets the link
++/// of the first hole to the end marker.
++pub(crate) open spec fn is_hole_chain<T>(slab: Slab<T>, first_vacant_index: Option<usize>) -> bool {
++    let holes = vacant_keys(slab@);
++    match first_vacant_index {
++        None => holes.len() == 0,
++        Some(first) => {
++            &&& holes.len() > 0
++            &&& first == holes[0]
++            &&& slab.next == holes.last()
++            &&& forall|j: int|
++                #![trigger slab.entries@[holes[j] as int]]
++                1 <= j < holes.len() ==> slab.entries@[holes[j] as int] == Entry::<T>::Vacant(
++                    holes[j - 1],
++                )
++        }
++    }
++}
++
++/// Pushing a hole (linked to the current head) extends the hole chain.
++proof fn lemma_push_hole<T>(before: Slab<T>, after: Slab<T>, first: usize)
++    requires
++        after.entries@ == before.entries@.push(Entry::Vacant(before.next)),
++        after.next == before.entries@.len() as usize,
++        before.entries@.len() < usize::MAX,
++        is_hole_chain(before, Some(first)) || (first == before.entries@.len() && vacant_keys(
++            before@,
++        ).len() == 0),
++    ensures
++        is_hole_chain(after, Some(first)),
++{
++    let h = before.entries@.len() as usize;
++    lemma_view_push(before.entries@, Entry::Vacant(before.next));
++    lemma_vacant_keys_from_push(before@, None, 0);
++    lemma_vacant_keys_from(before@, 0);
++    let old_holes = vacant_keys(before@);
++    let holes = vacant_keys(after@);
++    assert(holes == old_holes.push(h));
++    assert forall|j: int|
++        #![trigger after.entries@[holes[j] as int]]
++        1 <= j < holes.len() implies after.entries@[holes[j] as int] == Entry::<T>::Vacant(
++        holes[j - 1],
++    ) by {
++        if j < old_holes.len() {
++            assert(holes[j] == old_holes[j]);
++            assert(holes[j - 1] == old_holes[j - 1]);
++            assert(old_holes[j] < h);
++        } else {
++            assert(holes[j - 1] == old_holes.last());
++        }
++    }
++}
++
++impl<T> View for Builder<T> {
++    type V = Seq<Option<T>>;
++
++    /// The slots built so far.
++    closed spec fn view(&self) -> Seq<Option<T>> {
++        self.slab@
++    }
++}
++
+ impl<T> Builder<T> {
+-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+-        Self {
++    /// Some pair filled a hole, so `build` must recreate the vacant list.
++    pub(crate) closed spec fn spec_vacant_list_broken(&self) -> bool {
++        self.vacant_list_broken
++    }
++
++    /// The invariant of a `Builder`.
++    pub(crate) closed spec fn wf(&self) -> bool {
++        &&& self.slab.len == num_occupied(self.slab@)
++        &&& !self.vacant_list_broken ==> is_hole_chain(self.slab, self.first_vacant_index)
++    }
++
++    pub(crate) fn with_capacity(capacity: usize) -> (builder: Self)
++        ensures
++            builder.wf(),
++            builder@ == Seq::<Option<T>>::empty(),
++            !builder.spec_vacant_list_broken(),
++    {
++        let builder = Self {
+             slab: Slab::with_capacity(capacity),
+             vacant_list_broken: false,
+             first_vacant_index: None,
++        };
++        proof {
++            assert(vacant_keys(builder.slab@) =~= Seq::<usize>::empty());
+         }
++        builder
+     }
+-    pub(crate) fn pair(&mut self, key: usize, value: T) {
++
++    pub(crate) fn pair(&mut self, key: usize, value: T)
++        requires
++            old(self).wf(),
++        ensures
++            final(self).wf(),
++            final(self)@ == pair_slots(old(self)@, key, value),
++            final(self).spec_vacant_list_broken() == (old(self).spec_vacant_list_broken() || (key
++                < old(self)@.len() && old(self)@[key as int] is None)),
++    {
++        let ghost pre = self.slab;
++        let ghost first0 = self.first_vacant_index;
++        proof {
++            pre.lemma_len_bound();
++            lemma_num_occupied_le(pre@);
++        }
+         let slab = &mut self.slab;
+         if key < slab.entries.len() {
+             // iterator is not sorted, might need to recreate vacant list
+             if let Entry::Vacant(_) = slab.entries[key] {
++                proof {
++                    lemma_num_occupied_lt(pre@, key as int);
++                }
+                 self.vacant_list_broken = true;
+                 slab.len += 1;
+             }
+             // if an element with this key already exists, replace it.
+             // This is consistent with HashMap and BtreeMap
+             slab.entries[key] = Entry::Occupied(value);
++            proof {
++                lemma_view_update(pre.entries@, key as int, Entry::Occupied(value));
++                lemma_num_occupied_update(pre@, key as int, Some(value));
++                if !self.vacant_list_broken {
++                    // `key` was occupied: the holes and their links are unchanged.
++                    assert forall|k: int| 0 <= k < pre@.len() implies ((#[trigger] pre@[k]) is None
++                        <==> slab@[k] is None) by {}
++                    lemma_vacant_keys_from_same_pattern(pre@, slab@, 0);
++                    lemma_vacant_keys_from(pre@, 0);
++                    let holes = vacant_keys(pre@);
++                    assert forall|j: int| #![trigger holes[j]] 0 <= j < holes.len() implies holes[j]
++                        != key by {}
++                }
++            }
+         } else {
+             if self.first_vacant_index.is_none() && slab.entries.len() < key {
+                 self.first_vacant_index = Some(slab.entries.len());
+             }
+             // insert holes as necessary
+-            while slab.entries.len() < key {
++            while slab.entries.len() < key
++                invariant
++                    pre.entries@.len() <= slab.entries@.len() <= key,
++                    slab@ == pre@ + vacant_slots((slab@.len() - pre@.len()) as nat),
++                    slab.len == pre.len,
++                    slab.len == num_occupied(slab@),
++                    self.vacant_list_broken == old(self).vacant_list_broken,
++                    first0 is Some ==> self.first_vacant_index == first0,
++                    slab.entries@.len() < key ==> self.first_vacant_index is Some,
++                    !self.vacant_list_broken ==> {
++                        ||| is_hole_chain(*slab, self.first_vacant_index)
++                        ||| {
++                            &&& self.first_vacant_index == Some(slab.entries@.len() as usize)
++                            &&& vacant_keys(slab@).len() == 0
++                            &&& slab.entries@.len() < key
++                        }
++                    },
++                decreases key - slab.entries@.len(),
++            {
++                let ghost before = *slab;
++                proof {
++                    before.lemma_len_bound();
++                }
+                 // add the entry to the start of the vacant list
+                 let next = slab.next;
+                 slab.next = slab.entries.len();
+                 slab.entries.push(Entry::Vacant(next));
++                proof {
++                    slab.lemma_len_bound();
++                    lemma_view_push(before.entries@, Entry::Vacant(next));
++                    assert(slab@ =~= pre@ + vacant_slots((slab@.len() - pre@.len()) as nat));
++                    assert(slab@.drop_last() =~= before@);
++                    if !self.vacant_list_broken {
++                        lemma_push_hole(before, *slab, self.first_vacant_index->Some_0);
++                    }
++                }
++            }
++            let ghost before = *slab;
++            proof {
++                before.lemma_len_bound();
++                lemma_vacant_keys_from(before@, 0);
+             }
+             slab.entries.push(Entry::Occupied(value));
++            proof {
++                slab.lemma_len_bound();
++                lemma_num_occupied_le(before@);
++            }
+             slab.len += 1;
++            proof {
++                lemma_view_push(before.entries@, Entry::Occupied(value));
++                lemma_vacant_keys_from_push(before@, Some(value), 0);
++                assert(slab@.drop_last() =~= before@);
++                assert(slab@ =~= pair_slots(pre@, key, value));
++                let holes = vacant_keys(slab@);
++                assert forall|j: int| #![trigger holes[j]] 0 <= j < holes.len() implies holes[j]
++                    < before.entries@.len() by {}
++            }
++        }
++        proof {
++            if key < pre@.len() {
++                assert(slab@ =~= pair_slots(pre@, key, value));
++            }
+         }
+     }
+ 
+-    pub(crate) fn build(self) -> Slab<T> {
++    pub(crate) fn build(self) -> (slab: Slab<T>)
++        requires
++            self.wf(),
++        ensures
++            slab.wf(),
++            slab@ == self@,
++            slab.vacant_list() == if self.spec_vacant_list_broken() {
++                vacant_keys(self@)
++            } else {
++                vacant_keys(self@).reverse()
++            },
++    {
++        let ghost slots = self.slab@;
++        proof {
++            self.slab.lemma_len_bound();
++            lemma_vacant_keys_from(slots, 0);
++            lemma_num_occupied_le(slots);
++            lemma_num_occupied_all_some(slots);
++        }
+         let mut slab = self.slab;
+         if slab.len == slab.entries.len() {
+             // no vacant entries, so next might not have been updated
+             slab.next = slab.entries.len();
++            proof {
++                lemma_vacant_keys_from_skip(slots, 0, slots.len() as int);
++                assert forall|k: int| 0 <= k < slab.entries@.len() implies !(#[trigger] slab.entries@[k] is Vacant) by {
++                    assert(slots[k] is Some);
++                }
++                assert(vacant_keys(slots).reverse() =~= Seq::<usize>::empty());
++                slab.lemma_wf_intro(Seq::empty());
++            }
+         } else if self.vacant_list_broken {
+             slab.recreate_vacant_list();
+         } else if let Some(first_vacant_index) = self.first_vacant_index {
++            let ghost before = slab;
+             let next = slab.entries.len();
+             match &mut slab.entries[first_vacant_index] {
+                 Entry::Vacant(n) => *n = next,
+-                _ => unreachable!(),
++                _ => unreached(),
++            }
++            proof {
++                let holes = vacant_keys(slots);
++                let list = holes.reverse();
++                assert(slab.entries@ == before.entries@.update(
++                    first_vacant_index as int,
++                    Entry::Vacant(next),
++                ));
++                lemma_view_update(before.entries@, first_vacant_index as int, Entry::Vacant(next));
++                assert(slab@ =~= slots);
++                assert forall|i: int| #![trigger list[i]] 0 <= i < list.len() implies {
++                    &&& (list[i] as int) < slab.entries@.len()
++                    &&& slab.entries@[list[i] as int] == Entry::<T>::Vacant(
++                        if i + 1 < list.len() {
++                            list[i + 1]
++                        } else {
++                            slab.entries@.len() as usize
++                        },
++                    )
++                } by {
++                    let j = holes.len() - 1 - i;
++                    assert(list[i] == holes[j]);
++                    if i + 1 < list.len() {
++                        assert(list[i + 1] == holes[j - 1]);
++                        assert(holes[0] < holes[j]);
++                    }
++                }
++                assert forall|a: int, b: int|
++                    0 <= a < list.len() && 0 <= b < list.len() && a != b implies list[a]
++                    != list[b] by {
++                    assert(list[a] == holes[holes.len() - 1 - a]);
++                    assert(list[b] == holes[holes.len() - 1 - b]);
++                }
++                assert forall|k: int|
++                    0 <= k < slab.entries@.len() && (#[trigger] slab.entries@[k]) is Vacant implies list.contains(
++                    k as usize,
++                ) by {
++                    assert(slots[k] is None);
++                    assert(holes.contains(k as usize));
++                    let j = choose|j: int| 0 <= j < holes.len() && holes[j] == k as usize;
++                    assert(list[holes.len() - 1 - j] == k as usize);
++                }
++                slab.lemma_wf_intro(list);
+             }
+         } else {
+-            unreachable!()
++            unreached()
+         }
+         slab
+     }
+ }
++
++} // verus!
+--- /dev/null
++++ verus/slab/src/spec.rs
+@@ -0,0 +1,921 @@
++//! Specification of `Slab` for Verus (ghost code only; it is erased from normal builds).
++//!
++//! The contracts in `lib.rs` and `builder.rs` are stated with the definitions below.
++//! Nothing here is trusted: every `spec fn` is a definition and every `proof fn` is
++//! checked by Verus.
++//!
++//! The abstract state of a slab has two parts:
++//!
++//! * `slab@`, a `Seq<Option<T>>` of slots indexed by key (`Some(value)` when the key is
++//!   occupied, `None` when it is vacant), and
++//! * `slab.vacant_list()`, the vacant keys in the order in which `insert` reuses them.
++//!
++//! The internal invariant `slab.wf()` relates the private fields to that state.
++#![allow(unused_imports)]
++
++use vstd::prelude::*;
++
++use crate::{Entry, Slab, VacantEntry};
++
++verus! {
++
++// =============================================================================== slots
++
++/// The abstract value of a slot: `Some(value)` if it is occupied, `None` if it is vacant.
++pub(crate) open spec fn entry_view<T>(entry: Entry<T>) -> Option<T> {
++    match entry {
++        Entry::Occupied(value) => Some(value),
++        Entry::Vacant(_) => None,
++    }
++}
++
++/// The slots stored in a vector of entries.
++pub(crate) open spec fn entries_view<T>(entries: Seq<Entry<T>>) -> Seq<Option<T>> {
++    entries.map_values(|entry: Entry<T>| entry_view(entry))
++}
++
++impl<T> View for Slab<T> {
++    /// The slots of the slab, indexed by key.
++    type V = Seq<Option<T>>;
++
++    open(crate) spec fn view(&self) -> Seq<Option<T>> {
++        entries_view(self.entries@)
++    }
++}
++
++/// The number of occupied slots.
++pub open spec fn num_occupied<T>(slots: Seq<Option<T>>) -> nat
++    decreases slots.len(),
++{
++    if slots.len() == 0 {
++        0
++    } else {
++        num_occupied(slots.drop_last()) + if slots.last() is Some {
++            1nat
++        } else {
++            0nat
++        }
++    }
++}
++
++/// The vacant keys of `slots[lo..]`, in increasing order.
++pub open spec fn vacant_keys_from<T>(slots: Seq<Option<T>>, lo: int) -> Seq<usize>
++    decreases slots.len() - lo,
++{
++    if lo < 0 || lo >= slots.len() {
++        Seq::empty()
++    } else if slots[lo] is None {
++        seq![lo as usize] + vacant_keys_from(slots, lo + 1)
++    } else {
++        vacant_keys_from(slots, lo + 1)
++    }
++}
++
++/// All vacant keys of `slots`, in increasing order.
++pub open spec fn vacant_keys<T>(slots: Seq<Option<T>>) -> Seq<usize> {
++    vacant_keys_from(slots, 0)
++}
++
++/// `slots` without its trailing vacant slots.
++pub open spec fn trim_vacant_tail<T>(slots: Seq<Option<T>>) -> Seq<Option<T>>
++    decreases slots.len(),
++{
++    if slots.len() > 0 && slots.last() is None {
++        trim_vacant_tail(slots.drop_last())
++    } else {
++        slots
++    }
++}
++
++// ========================================================================= vacant list
++
++/// `list` is the vacant list threaded through `entries` from `next`: `next` is its head
++/// (the end marker `entries.len()` when the list is empty), each listed entry is vacant and
++/// links to the next one (the last one to the end marker).
++pub(crate) open spec fn is_vacant_chain<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    list: Seq<usize>,
++) -> bool {
++    &&& next == if list.len() == 0 {
++        entries.len() as usize
++    } else {
++        list[0]
++    }
++    &&& forall|i: int| 0 <= i < list.len() ==> (#[trigger] list[i] as int) < entries.len()
++    &&& forall|i: int|
++        #![trigger entries[list[i] as int]]
++        0 <= i < list.len() ==> entries[list[i] as int] == Entry::<T>::Vacant(
++            if i + 1 < list.len() {
++                list[i + 1]
++            } else {
++                entries.len() as usize
++            },
++        )
++}
++
++/// A vacant chain that, in addition, lists every vacant entry exactly once.
++pub(crate) open spec fn is_vacant_list<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    list: Seq<usize>,
++) -> bool {
++    &&& is_vacant_chain(entries, next, list)
++    &&& list.no_duplicates()
++    &&& forall|k: int|
++        0 <= k < entries.len() && (#[trigger] entries[k]) is Vacant ==> list.contains(k as usize)
++}
++
++impl<T> Slab<T> {
++    /// The vacant list: the vacant keys, in the order in which `insert` will reuse them.
++    pub open(crate) spec fn vacant_list(&self) -> Seq<usize> {
++        choose|list: Seq<usize>| is_vacant_list(self.entries@, self.next, list)
++    }
++
++    /// The invariant of `Slab`: `len` counts the occupied slots and `next` heads the vacant
++    /// list (see `is_vacant_list`).
++    pub open(crate) spec fn wf(&self) -> bool {
++        &&& self.len == num_occupied(self@)
++        &&& is_vacant_list(self.entries@, self.next, self.vacant_list())
++    }
++
++    /// The key that the next insertion will use: the head of the vacant list, or the end of
++    /// the slab when no slot is vacant.
++    pub open spec fn next_key(&self) -> usize {
++        if self.vacant_list().len() > 0 {
++            self.vacant_list()[0]
++        } else {
++            self@.len() as usize
++        }
++    }
++
++    /// `key` is associated with a value.
++    pub open spec fn spec_contains(&self, key: usize) -> bool {
++        key < self@.len() && self@[key as int] is Some
++    }
++
++    /// `post` is `pre` after storing `value` under `key`, the key that `insert` picks: the head
++    /// of the vacant list is reused, and the slab grows by one slot only if no slot is vacant.
++    pub open spec fn insert_post(pre: Self, post: Self, key: usize, value: T) -> bool {
++        &&& post.wf()
++        &&& key == pre.next_key()
++        &&& if pre.vacant_list().len() > 0 {
++            &&& post@ == pre@.update(key as int, Some(value))
++            &&& post.vacant_list() == pre.vacant_list().drop_first()
++        } else {
++            &&& post@ == pre@.push(Some(value))
++            &&& post.vacant_list() == Seq::<usize>::empty()
++        }
++    }
++
++    /// `post` is `pre` after removing `value`, which was stored under `key`; the freed key
++    /// becomes the head of the vacant list.
++    pub open spec fn remove_post(pre: Self, post: Self, key: usize, value: T) -> bool {
++        &&& post.wf()
++        &&& pre.spec_contains(key)
++        &&& value == pre@[key as int]->Some_0
++        &&& post@ == pre@.update(key as int, None)
++        &&& post.vacant_list() == seq![key] + pre.vacant_list()
++    }
++
++    /// `post` has the same abstract state as `pre`.
++    pub open spec fn unchanged(pre: Self, post: Self) -> bool {
++        &&& post.wf()
++        &&& post@ == pre@
++        &&& post.vacant_list() == pre.vacant_list()
++    }
++
++    /// Facts about the vacant list that clients may need.
++    pub proof fn lemma_vacant_list(&self)
++        requires
++            self.wf(),
++        ensures
++            self@.len() <= usize::MAX,
++            self.vacant_list().no_duplicates(),
++            forall|i: int|
++                #![trigger self.vacant_list()[i]]
++                0 <= i < self.vacant_list().len() ==> {
++                    &&& (self.vacant_list()[i] as int) < self@.len()
++                    &&& self@[self.vacant_list()[i] as int] is None
++                },
++            forall|k: int|
++                0 <= k < self@.len() && (#[trigger] self@[k]) is None ==> self.vacant_list().contains(
++                    k as usize,
++                ),
++            num_occupied(self@) <= self@.len(),
++            self.vacant_list().len() == 0 <==> num_occupied(self@) == self@.len(),
++    {
++        self.lemma_len_bound();
++        let list = self.vacant_list();
++        assert forall|i: int| #![trigger list[i]] 0 <= i < list.len() implies {
++            &&& (list[i] as int) < self@.len()
++            &&& self@[list[i] as int] is None
++        } by {}
++        assert forall|k: int| 0 <= k < self@.len() && (#[trigger] self@[k]) is None implies list.contains(
++            k as usize,
++        ) by {
++            assert(self.entries@[k] is Vacant);
++        }
++        lemma_num_occupied_le(self@);
++        if list.len() == 0 {
++            assert forall|k: int| 0 <= k < self@.len() implies self@[k] is Some by {
++                if self@[k] is None {
++                    assert(self.entries@[k] is Vacant);
++                }
++            }
++            lemma_num_occupied_all_some(self@);
++        } else {
++            lemma_num_occupied_lt(self@, list[0] as int);
++        }
++    }
++
++    /// The number of slots fits in a `usize` (it is the length of a `Vec`).
++    pub(crate) proof fn lemma_len_bound(&self)
++        ensures
++            self@.len() <= usize::MAX,
++            self@.len() == self.entries@.len(),
++    {
++        assert(self.entries@.len() == self.entries.len());
++    }
++
++    /// Establishes the invariant from a concrete vacant list, which is then *the* vacant list.
++    pub(crate) proof fn lemma_wf_intro(&self, list: Seq<usize>)
++        requires
++            self.len == num_occupied(self@),
++            is_vacant_list(self.entries@, self.next, list),
++        ensures
++            self.wf(),
++            self.vacant_list() == list,
++    {
++        self.lemma_len_bound();
++        let chosen = self.vacant_list();
++        assert(is_vacant_list(self.entries@, self.next, chosen));
++        lemma_vacant_chain_unique(self.entries@, self.next, chosen, list);
++    }
++}
++
++/// The vacant chain from `next` is determined by `entries` and `next`.
++pub(crate) proof fn lemma_vacant_chain_unique<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    l1: Seq<usize>,
++    l2: Seq<usize>,
++)
++    requires
++        entries.len() <= usize::MAX,
++        is_vacant_chain(entries, next, l1),
++        is_vacant_chain(entries, next, l2),
++    ensures
++        l1 == l2,
++{
++    assert forall|i: int| 0 <= i < l1.len() && i < l2.len() implies l1[i] == l2[i] by {
++        lemma_vacant_chain_agree(entries, next, l1, l2, i);
++    }
++    if l1.len() < l2.len() {
++        lemma_vacant_chain_too_short(entries, next, l1, l2);
++    } else if l2.len() < l1.len() {
++        lemma_vacant_chain_too_short(entries, next, l2, l1);
++    }
++    assert(l1 =~= l2);
++}
++
++proof fn lemma_vacant_chain_agree<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    l1: Seq<usize>,
++    l2: Seq<usize>,
++    i: int,
++)
++    requires
++        is_vacant_chain(entries, next, l1),
++        is_vacant_chain(entries, next, l2),
++        0 <= i < l1.len(),
++        i < l2.len(),
++    ensures
++        l1[i] == l2[i],
++    decreases i,
++{
++    if i > 0 {
++        lemma_vacant_chain_agree(entries, next, l1, l2, i - 1);
++        assert(entries[l1[i - 1] as int] == Entry::<T>::Vacant(l1[i]));
++        assert(entries[l2[i - 1] as int] == Entry::<T>::Vacant(l2[i]));
++    }
++}
++
++/// A vacant chain cannot be a proper prefix of another one.
++proof fn lemma_vacant_chain_too_short<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    short: Seq<usize>,
++    long: Seq<usize>,
++)
++    requires
++        entries.len() <= usize::MAX,
++        is_vacant_chain(entries, next, short),
++        is_vacant_chain(entries, next, long),
++        short.len() < long.len(),
++    ensures
++        false,
++{
++    if short.len() == 0 {
++        assert((long[0] as int) < entries.len());
++    } else {
++        let i = short.len() - 1;
++        lemma_vacant_chain_agree(entries, next, short, long, i);
++        assert(entries[short[i] as int] == Entry::<T>::Vacant(entries.len() as usize));
++        assert(entries[long[i] as int] == Entry::<T>::Vacant(long[i + 1]));
++        assert((long[i + 1] as int) < entries.len());
++    }
++}
++
++/// Linking a vacant entry `key` (not yet on the chain) in front of the chain.
++pub(crate) proof fn lemma_vacant_chain_prepend<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    list: Seq<usize>,
++    key: usize,
++)
++    requires
++        is_vacant_chain(entries, next, list),
++        (key as int) < entries.len(),
++        forall|j: int| 0 <= j < list.len() ==> #[trigger] list[j] != key,
++    ensures
++        is_vacant_chain(entries.update(key as int, Entry::Vacant(next)), key, seq![key] + list),
++{
++    let e2 = entries.update(key as int, Entry::Vacant(next));
++    let l2 = seq![key] + list;
++    assert forall|i: int| #![trigger l2[i]] 0 <= i < l2.len() implies {
++        &&& (l2[i] as int) < e2.len()
++        &&& e2[l2[i] as int] == Entry::<T>::Vacant(
++            if i + 1 < l2.len() {
++                l2[i + 1]
++            } else {
++                e2.len() as usize
++            },
++        )
++    } by {
++        if i > 0 {
++            assert(l2[i] == list[i - 1]);
++            assert(list[i - 1] != key);
++        }
++    }
++}
++
++/// `insert` at the head of the vacant list: the head becomes occupied and its link the new head.
++pub(crate) proof fn lemma_vacant_list_pop<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    list: Seq<usize>,
++    value: T,
++)
++    requires
++        entries.len() <= usize::MAX,
++        is_vacant_list(entries, next, list),
++        list.len() > 0,
++    ensures
++        entries[list[0] as int] is Vacant,
++        is_vacant_list(
++            entries.update(list[0] as int, Entry::Occupied(value)),
++            entries[list[0] as int]->Vacant_0,
++            list.drop_first(),
++        ),
++{
++    let key = list[0];
++    let e2 = entries.update(key as int, Entry::Occupied(value));
++    let rest = list.drop_first();
++    assert(entries[key as int] is Vacant);
++    assert forall|i: int| #![trigger rest[i]] 0 <= i < rest.len() implies {
++        &&& (rest[i] as int) < e2.len()
++        &&& e2[rest[i] as int] == Entry::<T>::Vacant(
++            if i + 1 < rest.len() {
++                rest[i + 1]
++            } else {
++                e2.len() as usize
++            },
++        )
++    } by {
++        assert(rest[i] == list[i + 1]);
++        assert(list[i + 1] != list[0]);
++    }
++    assert forall|k: int| 0 <= k < e2.len() && (#[trigger] e2[k]) is Vacant implies rest.contains(
++        k as usize,
++    ) by {
++        assert(entries[k] is Vacant);
++        let j = choose|j: int| 0 <= j < list.len() && list[j] == k as usize;
++        assert(j != 0);
++        assert(rest[j - 1] == k as usize);
++    }
++}
++
++/// `try_remove`: the freed entry links to the old head and becomes the new head.
++pub(crate) proof fn lemma_vacant_list_push<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    list: Seq<usize>,
++    key: usize,
++)
++    requires
++        entries.len() <= usize::MAX,
++        is_vacant_list(entries, next, list),
++        (key as int) < entries.len(),
++        entries[key as int] is Occupied,
++    ensures
++        is_vacant_list(entries.update(key as int, Entry::Vacant(next)), key, seq![key] + list),
++{
++    let e2 = entries.update(key as int, Entry::Vacant(next));
++    let l2 = seq![key] + list;
++    assert forall|j: int| 0 <= j < list.len() implies #[trigger] list[j] != key by {
++        assert(entries[list[j] as int] is Vacant);
++    }
++    lemma_vacant_chain_prepend(entries, next, list, key);
++    assert forall|a: int, b: int| 0 <= a < l2.len() && 0 <= b < l2.len() && a != b implies l2[a]
++        != l2[b] by {
++        if a > 0 {
++            assert(l2[a] == list[a - 1]);
++        }
++        if b > 0 {
++            assert(l2[b] == list[b - 1]);
++        }
++    }
++    assert forall|k: int| 0 <= k < e2.len() && (#[trigger] e2[k]) is Vacant implies l2.contains(
++        k as usize,
++    ) by {
++        if k == key {
++            assert(l2[0] == key);
++        } else {
++            assert(entries[k] is Vacant);
++            let j = choose|j: int| 0 <= j < list.len() && list[j] == k as usize;
++            assert(l2[j + 1] == k as usize);
++        }
++    }
++}
++
++/// Replacing the value of an occupied entry keeps the vacant list.
++pub(crate) proof fn lemma_vacant_list_set_occupied<T>(
++    entries: Seq<Entry<T>>,
++    next: usize,
++    list: Seq<usize>,
++    key: int,
++    value: T,
++)
++    requires
++        entries.len() <= usize::MAX,
++        is_vacant_list(entries, next, list),
++        0 <= key < entries.len(),
++        entries[key] is Occupied,
++    ensures
++        is_vacant_list(entries.update(key, Entry::Occupied(value)), next, list),
++{
++    let e2 = entries.update(key, Entry::Occupied(value));
++    assert forall|i: int| #![trigger list[i]] 0 <= i < list.len() implies list[i] != key by {
++        assert(entries[list[i] as int] is Vacant);
++    }
++    assert forall|k: int| 0 <= k < e2.len() && (#[trigger] e2[k]) is Vacant implies list.contains(
++        k as usize,
++    ) by {
++        assert(entries[k] is Vacant);
++    }
++}
++
++// ============================================================================== views
++
++/// The slots after changing one entry.
++pub(crate) proof fn lemma_view_update<T>(entries: Seq<Entry<T>>, k: int, entry: Entry<T>)
++    requires
++        0 <= k < entries.len(),
++    ensures
++        entries_view(entries.update(k, entry)) == entries_view(entries).update(k, entry_view(entry)),
++{
++    assert(entries_view(entries.update(k, entry)) =~= entries_view(entries).update(
++        k,
++        entry_view(entry),
++    ));
++}
++
++/// The slots after appending an entry.
++pub(crate) proof fn lemma_view_push<T>(entries: Seq<Entry<T>>, entry: Entry<T>)
++    ensures
++        entries_view(entries.push(entry)) == entries_view(entries).push(entry_view(entry)),
++{
++    assert(entries_view(entries.push(entry)) =~= entries_view(entries).push(entry_view(entry)));
++}
++
++/// The slots after removing the last entry.
++pub(crate) proof fn lemma_view_drop_last<T>(entries: Seq<Entry<T>>)
++    requires
++        entries.len() > 0,
++    ensures
++        entries_view(entries.drop_last()) == entries_view(entries).drop_last(),
++{
++    assert(entries_view(entries.drop_last()) =~= entries_view(entries).drop_last());
++}
++
++// ===================================================================== occupied count
++
++/// The count is at most the number of slots.
++pub proof fn lemma_num_occupied_le<T>(slots: Seq<Option<T>>)
++    ensures
++        num_occupied(slots) <= slots.len(),
++    decreases slots.len(),
++{
++    if slots.len() > 0 {
++        lemma_num_occupied_le(slots.drop_last());
++    }
++}
++
++/// Changing one slot changes the count by at most one.
++pub proof fn lemma_num_occupied_update<T>(slots: Seq<Option<T>>, k: int, slot: Option<T>)
++    requires
++        0 <= k < slots.len(),
++    ensures
++        num_occupied(slots.update(k, slot)) + (if slots[k] is Some {
++            1int
++        } else {
++            0int
++        }) == num_occupied(slots) + (if slot is Some {
++            1int
++        } else {
++            0int
++        }),
++    decreases slots.len(),
++{
++    let s2 = slots.update(k, slot);
++    if k == slots.len() - 1 {
++        assert(s2.drop_last() =~= slots.drop_last());
++    } else {
++        lemma_num_occupied_update(slots.drop_last(), k, slot);
++        assert(s2.drop_last() =~= slots.drop_last().update(k, slot));
++    }
++}
++
++/// A vacant slot leaves room in the count.
++pub proof fn lemma_num_occupied_lt<T>(slots: Seq<Option<T>>, k: int)
++    requires
++        0 <= k < slots.len(),
++        slots[k] is None,
++    ensures
++        num_occupied(slots) < slots.len(),
++{
++    lemma_num_occupied_update(slots, k, Some(arbitrary()));
++    lemma_num_occupied_le(slots.update(k, Some(arbitrary())));
++}
++
++/// An occupied slot is counted.
++pub proof fn lemma_num_occupied_pos<T>(slots: Seq<Option<T>>, k: int)
++    requires
++        0 <= k < slots.len(),
++        slots[k] is Some,
++    ensures
++        num_occupied(slots) > 0,
++{
++    lemma_num_occupied_update(slots, k, None);
++}
++
++/// When every slot is occupied, every slot is counted, and conversely.
++pub proof fn lemma_num_occupied_all_some<T>(slots: Seq<Option<T>>)
++    ensures
++        (forall|k: int| 0 <= k < slots.len() ==> (#[trigger] slots[k]) is Some) <==> num_occupied(
++            slots,
++        ) == slots.len(),
++    decreases slots.len(),
++{
++    if slots.len() > 0 {
++        let init = slots.drop_last();
++        lemma_num_occupied_all_some(init);
++        lemma_num_occupied_le(init);
++        if forall|k: int| 0 <= k < slots.len() ==> (#[trigger] slots[k]) is Some {
++            assert forall|k: int| 0 <= k < init.len() implies (#[trigger] init[k]) is Some by {
++                assert(slots[k] is Some);
++            }
++        }
++        if num_occupied(slots) == slots.len() {
++            assert forall|k: int| 0 <= k < slots.len() implies (#[trigger] slots[k]) is Some by {
++                if k < init.len() {
++                    assert(init[k] is Some);
++                }
++            }
++        }
++    }
++}
++
++// ======================================================================== vacant keys
++
++/// The keys listed by `vacant_keys_from(slots, lo)`: vacant, increasing, at least `lo`, and all
++/// of the vacant keys from `lo` on.
++pub proof fn lemma_vacant_keys_from<T>(slots: Seq<Option<T>>, lo: int)
++    requires
++        0 <= lo <= slots.len(),
++        slots.len() <= usize::MAX + 1,
++    ensures
++        ({
++            let keys = vacant_keys_from(slots, lo);
++            &&& forall|i: int|
++                #![trigger keys[i]]
++                0 <= i < keys.len() ==> {
++                    &&& lo <= keys[i] < slots.len()
++                    &&& slots[keys[i] as int] is None
++                }
++            &&& forall|i: int, j: int| 0 <= i < j < keys.len() ==> keys[i] < keys[j]
++            &&& forall|k: int|
++                lo <= k < slots.len() && (#[trigger] slots[k]) is None ==> keys.contains(k as usize)
++            &&& keys.no_duplicates()
++        }),
++    decreases slots.len() - lo,
++{
++    if lo < slots.len() {
++        lemma_vacant_keys_from(slots, lo + 1);
++        let rest = vacant_keys_from(slots, lo + 1);
++        let keys = vacant_keys_from(slots, lo);
++        if slots[lo] is None {
++            assert forall|k: int| lo <= k < slots.len() && (#[trigger] slots[k]) is None implies keys.contains(
++                k as usize,
++            ) by {
++                if k == lo {
++                    assert(keys[0] == k);
++                } else {
++                    assert(rest.contains(k as usize));
++                    let j = choose|j: int| 0 <= j < rest.len() && rest[j] == k as usize;
++                    assert(keys[j + 1] == k);
++                }
++            }
++        }
++    }
++}
++
++/// No vacant key in `slots[lo..hi]` means the vacant keys from `lo` are those from `hi`.
++pub proof fn lemma_vacant_keys_from_skip<T>(slots: Seq<Option<T>>, lo: int, hi: int)
++    requires
++        0 <= lo <= hi <= slots.len(),
++        forall|k: int| lo <= k < hi ==> (#[trigger] slots[k]) is Some,
++    ensures
++        vacant_keys_from(slots, lo) == vacant_keys_from(slots, hi),
++    decreases hi - lo,
++{
++    if lo < hi {
++        assert(slots[lo] is Some);
++        lemma_vacant_keys_from_skip(slots, lo + 1, hi);
++    }
++}
++
++/// Appending a slot appends its key if it is vacant.
++pub proof fn lemma_vacant_keys_from_push<T>(slots: Seq<Option<T>>, slot: Option<T>, lo: int)
++    requires
++        0 <= lo <= slots.len(),
++    ensures
++        vacant_keys_from(slots.push(slot), lo) == if slot is None {
++            vacant_keys_from(slots, lo).push(slots.len() as usize)
++        } else {
++            vacant_keys_from(slots, lo)
++        },
++    decreases slots.len() - lo,
++{
++    let s2 = slots.push(slot);
++    if lo < slots.len() {
++        lemma_vacant_keys_from_push(slots, slot, lo + 1);
++        assert(s2[lo] == slots[lo]);
++        if slots[lo] is None {
++            let rest = vacant_keys_from(slots, lo + 1);
++            if slot is None {
++                assert(seq![lo as usize] + rest.push(slots.len() as usize) =~= (seq![lo as usize]
++                    + rest).push(slots.len() as usize));
++            }
++        }
++    } else {
++        assert(vacant_keys_from(slots, lo) =~= Seq::<usize>::empty());
++        assert(vacant_keys_from(s2, lo + 1) =~= Seq::<usize>::empty());
++        if slot is None {
++            assert(seq![lo as usize] + Seq::<usize>::empty() =~= Seq::<usize>::empty().push(
++                slots.len() as usize,
++            ));
++        }
++    }
++}
++
++/// The vacant keys only depend on which slots are vacant.
++pub proof fn lemma_vacant_keys_from_same_pattern<T>(s1: Seq<Option<T>>, s2: Seq<Option<T>>, lo: int)
++    requires
++        s1.len() == s2.len(),
++        forall|k: int| 0 <= k < s1.len() ==> ((#[trigger] s1[k]) is None <==> s2[k] is None),
++    ensures
++        vacant_keys_from(s1, lo) == vacant_keys_from(s2, lo),
++    decreases s1.len() - lo,
++{
++    if 0 <= lo < s1.len() {
++        lemma_vacant_keys_from_same_pattern(s1, s2, lo + 1);
++    }
++}
++
++// ===================================================================== trailing vacancy
++
++/// Removing vacant slots does not change the count.
++pub proof fn lemma_num_occupied_trim<T>(slots: Seq<Option<T>>)
++    ensures
++        num_occupied(trim_vacant_tail(slots)) == num_occupied(slots),
++    decreases slots.len(),
++{
++    if slots.len() > 0 && slots.last() is None {
++        lemma_num_occupied_trim(slots.drop_last());
++    }
++}
++
++/// The count only depends on which slots are occupied.
++pub proof fn lemma_num_occupied_same_pattern<T>(s1: Seq<Option<T>>, s2: Seq<Option<T>>)
++    requires
++        s1.len() == s2.len(),
++        forall|k: int| 0 <= k < s1.len() ==> ((#[trigger] s1[k]) is Some <==> s2[k] is Some),
++    ensures
++        num_occupied(s1) == num_occupied(s2),
++    decreases s1.len(),
++{
++    if s1.len() > 0 {
++        let (t1, t2) = (s1.drop_last(), s2.drop_last());
++        assert forall|k: int| 0 <= k < t1.len() implies ((#[trigger] t1[k]) is Some <==> t2[k] is Some) by {
++            assert(s1[k] is Some <==> s2[k] is Some);
++        }
++        lemma_num_occupied_same_pattern(t1, t2);
++        assert(s1.last() is Some <==> s2.last() is Some);
++    }
++}
++
++// ================================================================ in-place value updates
++
++/// `s` differs from `t` at most in the values held by occupied entries.
++pub(crate) open spec fn same_shape<T>(t: Slab<T>, s: Slab<T>) -> bool {
++    &&& s.len == t.len
++    &&& s.next == t.next
++    &&& s.entries@.len() == t.entries@.len()
++    &&& forall|k: int|
++        0 <= k < t.entries@.len() ==> {
++            &&& ((#[trigger] t.entries@[k]) is Vacant ==> s.entries@[k] == t.entries@[k])
++            &&& (t.entries@[k] is Occupied ==> s.entries@[k] is Occupied)
++        }
++}
++
++impl<T> Slab<T> {
++    /// A slab that differs from a well-formed one only in the values of occupied entries is
++    /// well formed and has the same vacant list. (Stated for all such slabs, so that it applies
++    /// to the final value of a slab borrowed through a returned `&mut T`.)
++    pub(crate) proof fn lemma_same_shape_preserves_wf(&self)
++        requires
++            self.wf(),
++        ensures
++            forall|s: Slab<T>|
++                #![trigger s.wf()]
++                #![trigger s.vacant_list()]
++                same_shape(*self, s) ==> s.wf() && s.vacant_list() == self.vacant_list(),
++    {
++        assert forall|s: Slab<T>|
++            #![trigger s.wf()]
++            #![trigger s.vacant_list()]
++            same_shape(*self, s) implies s.wf() && s.vacant_list() == self.vacant_list() by {
++            let list = self.vacant_list();
++            self.lemma_len_bound();
++            s.lemma_len_bound();
++            assert forall|i: int| #![trigger list[i]] 0 <= i < list.len() implies {
++                &&& (list[i] as int) < s.entries@.len()
++                &&& s.entries@[list[i] as int] == Entry::<T>::Vacant(
++                    if i + 1 < list.len() {
++                        list[i + 1]
++                    } else {
++                        s.entries@.len() as usize
++                    },
++                )
++            } by {
++                assert(self.entries@[list[i] as int] is Vacant);
++            }
++            assert forall|k: int|
++                0 <= k < s.entries@.len() && (#[trigger] s.entries@[k]) is Vacant implies list.contains(
++                k as usize,
++            ) by {
++                assert(self.entries@[k] is Vacant);
++            }
++            assert forall|k: int| 0 <= k < self@.len() implies ((#[trigger] self@[k]) is Some <==> s@[k] is Some) by {
++                assert(self.entries@[k] is Occupied <==> s.entries@[k] is Occupied);
++            }
++            lemma_num_occupied_same_pattern(self@, s@);
++            s.lemma_wf_intro(list);
++        }
++    }
++
++    /// After `insert_post(pre, mid, key, val)`, overwriting the new value with `x` gives
++    /// `insert_post(pre, s, key, x)`. (Stated for all such `s` and `x`, as above.)
++    pub(crate) proof fn lemma_insert_then_set(pre: Self, mid: Self, key: usize, val: T)
++        requires
++            pre.wf(),
++            Self::insert_post(pre, mid, key, val),
++        ensures
++            (key as int) < mid.entries@.len(),
++            mid.entries@[key as int] == Entry::Occupied(val),
++            forall|s: Self, x: T|
++                #![trigger Self::insert_post(pre, s, key, x)]
++                s.len == mid.len && s.next == mid.next && s.entries@ == mid.entries@.update(
++                    key as int,
++                    Entry::Occupied(x),
++                ) ==> Self::insert_post(pre, s, key, x),
++    {
++        pre.lemma_vacant_list();
++        mid.lemma_len_bound();
++        if pre.vacant_list().len() > 0 {
++            assert((pre.vacant_list()[0] as int) < pre@.len());
++        }
++        assert(mid@[key as int] == Some(val));
++        assert(mid.entries@[key as int] is Occupied);
++        mid.lemma_same_shape_preserves_wf();
++        assert forall|s: Self, x: T|
++            #![trigger Self::insert_post(pre, s, key, x)]
++            s.len == mid.len && s.next == mid.next && s.entries@ == mid.entries@.update(
++                key as int,
++                Entry::Occupied(x),
++            ) implies Self::insert_post(pre, s, key, x) by {
++            assert(same_shape(mid, s));
++            lemma_view_update(mid.entries@, key as int, Entry::Occupied(x));
++            if pre.vacant_list().len() > 0 {
++                assert(s@ =~= pre@.update(key as int, Some(x)));
++            } else {
++                assert(s@ =~= pre@.push(Some(x)));
++            }
++        }
++    }
++}
++
++// =========================================================================== VacantEntry
++
++impl<'a, T> VacantEntry<'a, T> {
++    /// The key under which the entry will store its value.
++    pub open(crate) spec fn spec_key(&self) -> usize {
++        self.key
++    }
++
++    /// The slab, as it is now.
++    pub open(crate) spec fn slab(&self) -> Slab<T> {
++        *self.slab
++    }
++
++    /// The slab as it will be when the entry, and the reference returned by `insert`, are gone.
++    #[verifier::prophetic]
++    pub open(crate) spec fn final_slab(&self) -> Slab<T> {
++        *final(self.slab)
++    }
++
++    /// The entry's invariant: the slab is well formed and `key` is the key it will use next.
++    pub open(crate) spec fn wf(&self) -> bool {
++        &&& self.slab().wf()
++        &&& self.key == self.slab().next_key()
++    }
++}
++
++// ================================================================================ retain
++
++/// `f` was called with `key` and a reference to `value`, and `slot` is what the slot holds
++/// afterwards: the value as `f` left it if `f` returned `true`, nothing if it returned `false`.
++#[verifier::prophetic]
++pub open spec fn retain_step<T, F: FnMut(usize, &mut T) -> bool>(
++    f: F,
++    key: usize,
++    value: T,
++    slot: Option<T>,
++) -> bool {
++    exists|v: &mut T, keep: bool|
++        #![trigger f.ensures((key, v), keep)]
++        *v == value && f.ensures((key, v), keep) && slot == if keep {
++            Some(*final(v))
++        } else {
++            None
++        }
++}
++
++/// The keys below `n` that are occupied in `pre` and vacant in `post`, in decreasing order.
++pub open spec fn removed_keys_desc<T>(pre: Seq<Option<T>>, post: Seq<Option<T>>, n: int) -> Seq<
++    usize,
++>
++    decreases n,
++{
++    if n <= 0 {
++        Seq::empty()
++    } else if pre[n - 1] is Some && post[n - 1] is None {
++        seq![(n - 1) as usize] + removed_keys_desc(pre, post, n - 1)
++    } else {
++        removed_keys_desc(pre, post, n - 1)
++    }
++}
++
++/// `removed_keys_desc` only looks at the slots below `n`.
++pub proof fn lemma_removed_keys_desc_prefix<T>(
++    pre: Seq<Option<T>>,
++    s1: Seq<Option<T>>,
++    s2: Seq<Option<T>>,
++    n: int,
++)
++    requires
++        forall|k: int| 0 <= k < n ==> ((#[trigger] s1[k]) is None <==> s2[k] is None),
++    ensures
++        removed_keys_desc(pre, s1, n) == removed_keys_desc(pre, s2, n),
++    decreases n,
++{
++    if n > 0 {
++        assert(s1[n - 1] is None <==> s2[n - 1] is None);
++        lemma_removed_keys_desc_prefix(pre, s1, s2, n - 1);
++    }
++}
++
++} // verus!
+--- /dev/null
++++ verus/slab/src/std_ext.rs
+@@ -0,0 +1,57 @@
++//! Verified stand-ins for std methods that vstd does not specify (`<[T]>::get_mut` and
++//! `core::mem::replace`), written with std methods that it does specify. Each one behaves
++//! exactly like the method it replaces.
++use alloc::vec::Vec;
++use vstd::prelude::*;
++
++verus! {
++
++/// `vec.get_mut(i)`, implemented with `IndexMut` (`&mut vec[i]`).
++#[inline]
++pub(crate) fn vec_get_mut<E>(vec: &mut Vec<E>, i: usize) -> (r: Option<&mut E>)
++    ensures
++        i < old(vec)@.len() ==> {
++            &&& r is Some
++            &&& *r->Some_0 == old(vec)@[i as int]
++            &&& final(vec)@ == old(vec)@.update(i as int, *final(r->Some_0))
++        },
++        i >= old(vec)@.len() ==> r is None && final(vec)@ == old(vec)@,
++{
++    if i < vec.len() {
++        Some(&mut vec[i])
++    } else {
++        None
++    }
++}
++
++/// `slice.get_mut(i)`, implemented with `split_at_mut` and `first_mut`.
++#[inline]
++pub(crate) fn slice_get_mut<E>(slice: &mut [E], i: usize) -> (r: Option<&mut E>)
++    ensures
++        i < old(slice)@.len() ==> {
++            &&& r is Some
++            &&& *r->Some_0 == old(slice)@[i as int]
++            &&& final(slice)@ == old(slice)@.update(i as int, *final(r->Some_0))
++        },
++        i >= old(slice)@.len() ==> r is None && final(slice)@ == old(slice)@,
++{
++    if i < slice.len() {
++        slice.split_at_mut(i).1.first_mut()
++    } else {
++        None
++    }
++}
++
++/// `core::mem::replace(dest, src)`, implemented with `core::mem::swap`.
++#[inline]
++pub(crate) fn mem_replace<E>(dest: &mut E, src: E) -> (r: E)
++    ensures
++        r == *old(dest),
++        *final(dest) == src,
++{
++    let mut src = src;
++    core::mem::swap(dest, &mut src);
++    src
++}
++
++} // verus!
+--- /dev/null
++++ verus/slab/src/verified_examples.rs
+@@ -0,0 +1,160 @@
++//! Verified clients of the specification (compiled only under Verus; never called).
++//!
++//! Each function replays a documented example or upstream test and proves its expected
++//! outcome from the contracts alone. They show that the contracts are strong enough to be
++//! used: a vacuous or too-weak specification would make these proofs fail.
++#![allow(unused_imports)]
++
++use crate::builder::Builder;
++use crate::spec::*;
++use crate::Slab;
++use vstd::prelude::*;
++
++verus! {
++
++/// Crate docs, "Basic storing and retrieval" (reading part).
++fn example_insert_get() {
++    let mut slab: Slab<u64> = Slab::new();
++
++    let hello = slab.insert(1);
++    let world = slab.insert(2);
++    assert(hello == 0 && world == 1);
++
++    let h = slab[hello];
++    let w = slab[world];
++    assert(h == 1 && w == 2);
++
++    let g = slab.get(world);
++    assert(g == Some(&2u64));
++    let missing = slab.get(123);
++    assert(missing is None);
++}
++
++/// `Slab::vacant_key` docs: keys are reused last-in, first-out.
++fn example_vacant_key() {
++    let mut slab: Slab<u64> = Slab::new();
++    let k = slab.vacant_key();
++    assert(k == 0);
++
++    slab.insert(0);
++    let k = slab.vacant_key();
++    assert(k == 1);
++
++    slab.insert(1);
++    slab.remove(0);
++    let k = slab.vacant_key();
++    assert(k == 0);
++}
++
++/// `VacantEntry` docs: the value can contain its own key.
++fn example_vacant_entry() {
++    let mut slab: Slab<(usize, u64)> = Slab::new();
++
++    let hello = {
++        let entry = slab.vacant_entry();
++        let key = entry.key();
++
++        entry.insert((key, 7));
++        key
++    };
++
++    assert(slab@[hello as int] == Some((hello, 7u64)));
++    let v = slab[hello];
++    assert(v.0 == hello);
++}
++
++/// `Slab::get_mut` docs: writing through the returned reference updates the slab.
++fn example_get_mut() {
++    let mut slab: Slab<u64> = Slab::new();
++    let key = slab.insert(5);
++
++    match slab.get_mut(key) {
++        Some(v) => *v = 6,
++        None => {},
++    }
++    let v = slab[key];
++    assert(v == 6);
++}
++
++/// `Slab::try_remove` docs and the upstream `try_remove` test.
++fn example_try_remove() {
++    let mut slab: Slab<u64> = Slab::new();
++    let key = slab.insert(1);
++
++    let first = slab.try_remove(key);
++    assert(first == Some(1u64));
++    let second = slab.try_remove(key);
++    assert(second is None);
++    let c = slab.contains(key);
++    assert(!c);
++}
++
++/// `Slab::retain` docs.
++fn example_retain() {
++    let mut slab: Slab<u64> = Slab::new();
++
++    let k1 = slab.insert(0);
++    let k2 = slab.insert(1);
++    let k3 = slab.insert(2);
++
++    let f = |key: usize, val: &mut u64| -> (keep: bool)
++        ensures
++            keep == (key == k1 || *old(val) == 1),
++            *final(val) == *old(val),
++        { key == k1 || *val == 1 };
++    let ghost pre = slab@;
++    slab.retain(f);
++
++    proof {
++        assert(pre =~= seq![Some(0u64), Some(1u64), Some(2u64)]);
++        assert(retain_step(f, 0, 0, slab@[0]));
++        assert(retain_step(f, 1, 1, slab@[1]));
++        assert(retain_step(f, 2, 2, slab@[2]));
++        assert(slab@ =~= seq![Some(0u64), Some(1u64), None]);
++    }
++    let c1 = slab.contains(k1);
++    let c2 = slab.contains(k2);
++    let c3 = slab.contains(k3);
++    assert(c1 && c2 && !c3);
++
++    let len = slab.len();
++    proof {
++        reveal_with_fuel(num_occupied, 4);
++        assert(slab@.drop_last() =~= seq![Some(0u64), Some(1u64)]);
++        assert(slab@.drop_last().drop_last() =~= seq![Some(0u64)]);
++        assert(slab@.drop_last().drop_last().drop_last() =~= Seq::<Option<u64>>::empty());
++    }
++    assert(len == 2);
++
++    // The removed key is the next to be reused.
++    proof {
++        reveal_with_fuel(removed_keys_desc, 4);
++        assert(removed_keys_desc(pre, slab@, 3) =~= seq![2usize]);
++    }
++    let k = slab.insert(9);
++    assert(k == k3);
++}
++
++/// Upstream test `from_iterator_issue_100` (first case): pairs `[(1, ())]`, built through the
++/// `Builder` that `FromIterator` uses. Before #102 the first insertion after this returned 0
++/// but left the vacant list pointing at 0 again.
++fn example_issue_100() {
++    let mut builder: Builder<u64> = Builder::with_capacity(1);
++    builder.pair(1, 10);
++    let mut slab = builder.build();
++
++    proof {
++        let slots = seq![None, Some(10u64)];
++        assert(slab@ =~= slots);
++        reveal_with_fuel(vacant_keys_from, 3);
++        assert(vacant_keys(slots) =~= seq![0usize]);
++        assert(seq![0usize].reverse() =~= seq![0usize]);
++    }
++
++    let a = slab.insert(20);
++    let b = slab.insert(30);
++    let c = slab.insert(40);
++    assert(a == 0 && b == 2 && c == 3);
++}
++
++} // verus!
