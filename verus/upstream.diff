@@ -899,7 +899,7 @@
 +        }
 +        for i in iter: 0..self.entries.len()
 +            invariant
-+                iter.end == pre@.len(),
++                iter.snapshot.end == pre@.len(),
 +                f == f0,
 +                forall|key: usize, value: &mut T| f.requires((key, value)),
 +                self.wf(),
@@ -1282,7 +1282,7 @@
  
  // Building `Slab` from pairs (usize, T).
  pub(crate) struct Builder<T> {
-@@ -7,57 +15,316 @@
+@@ -7,57 +15,350 @@
      first_vacant_index: Option<usize>,
  }
  
@@ -1356,6 +1356,74 @@
 +            assert(holes[j - 1] == old_holes.last());
 +        }
 +    }
++}
++
++/// The last case of `build` (the #102 fix): pointing the first hole at the end marker closes the
++/// hole chain, which becomes the vacant list with the holes in decreasing order.
++/// Kept out of `build` so that its proof does not exceed the rlimit there.
++proof fn lemma_close_hole_chain<T>(before: Slab<T>, after: Slab<T>, first: usize)
++    requires
++        is_hole_chain(before, Some(first)),
++        before.len == num_occupied(before@),
++        after.len == before.len,
++        after.next == before.next,
++        after.entries@ == before.entries@.update(
++            first as int,
++            Entry::Vacant(before.entries@.len() as usize),
++        ),
++    ensures
++        after.wf(),
++        after@ == before@,
++        after.vacant_list() == vacant_keys(before@).reverse(),
++{
++    let slots = before@;
++    let next = before.entries@.len() as usize;
++    before.lemma_len_bound();
++    let holes = vacant_keys(slots);
++    let list = holes.reverse();
++    // `lemma_vacant_keys_from` is called inside each `by` block below, not once here: its
++    // ordering quantifier over pairs of keys makes the whole proof unstable when in scope.
++    assert((first as int) < slots.len() && slots[first as int] is None) by {
++        lemma_vacant_keys_from(slots, 0);
++        assert(holes[0] == first);
++    }
++    lemma_view_update(before.entries@, first as int, Entry::Vacant(next));
++    assert(after@ =~= slots);
++    assert forall|i: int| #![trigger list[i]] 0 <= i < list.len() implies {
++        &&& (list[i] as int) < after.entries@.len()
++        &&& after.entries@[list[i] as int] == Entry::<T>::Vacant(
++            if i + 1 < list.len() {
++                list[i + 1]
++            } else {
++                after.entries@.len() as usize
++            },
++        )
++    } by {
++        lemma_vacant_keys_from(slots, 0);
++        let j = holes.len() - 1 - i;
++        assert(list[i] == holes[j]);
++        if i + 1 < list.len() {
++            assert(list[i + 1] == holes[j - 1]);
++            assert(holes[0] < holes[j]);
++        }
++    }
++    assert forall|a: int, b: int|
++        0 <= a < list.len() && 0 <= b < list.len() && a != b implies list[a] != list[b] by {
++        lemma_vacant_keys_from(slots, 0);
++        assert(list[a] == holes[holes.len() - 1 - a]);
++        assert(list[b] == holes[holes.len() - 1 - b]);
++    }
++    assert forall|k: int|
++        0 <= k < after.entries@.len() && (#[trigger] after.entries@[k]) is Vacant implies list.contains(
++        k as usize,
++    ) by {
++        lemma_vacant_keys_from(slots, 0);
++        assert(slots[k] is None);
++        assert(holes.contains(k as usize));
++        let j = choose|j: int| 0 <= j < holes.len() && holes[j] == k as usize;
++        assert(list[holes.len() - 1 - j] == k as usize);
++    }
++    after.lemma_wf_intro(list);
 +}
 +
 +impl<T> View for Builder<T> {
@@ -1435,10 +1503,11 @@
 +                    assert forall|k: int| 0 <= k < pre@.len() implies ((#[trigger] pre@[k]) is None
 +                        <==> slab@[k] is None) by {}
 +                    lemma_vacant_keys_from_same_pattern(pre@, slab@, 0);
-+                    lemma_vacant_keys_from(pre@, 0);
 +                    let holes = vacant_keys(pre@);
 +                    assert forall|j: int| #![trigger holes[j]] 0 <= j < holes.len() implies holes[j]
-+                        != key by {}
++                        != key by {
++                        lemma_vacant_keys_from(pre@, 0);
++                    }
 +                }
 +            }
          } else {
@@ -1487,7 +1556,6 @@
 +            let ghost before = *slab;
 +            proof {
 +                before.lemma_len_bound();
-+                lemma_vacant_keys_from(before@, 0);
              }
              slab.entries.push(Entry::Occupied(value));
 +            proof {
@@ -1502,7 +1570,9 @@
 +                assert(slab@ =~= pair_slots(pre@, key, value));
 +                let holes = vacant_keys(slab@);
 +                assert forall|j: int| #![trigger holes[j]] 0 <= j < holes.len() implies holes[j]
-+                    < before.entries@.len() by {}
++                    < before.entries@.len() by {
++                    lemma_vacant_keys_from(before@, 0);
++                }
 +            }
 +        }
 +        proof {
@@ -1555,47 +1625,11 @@
 +                _ => unreached(),
 +            }
 +            proof {
-+                let holes = vacant_keys(slots);
-+                let list = holes.reverse();
 +                assert(slab.entries@ == before.entries@.update(
 +                    first_vacant_index as int,
 +                    Entry::Vacant(next),
 +                ));
-+                lemma_view_update(before.entries@, first_vacant_index as int, Entry::Vacant(next));
-+                assert(slab@ =~= slots);
-+                assert forall|i: int| #![trigger list[i]] 0 <= i < list.len() implies {
-+                    &&& (list[i] as int) < slab.entries@.len()
-+                    &&& slab.entries@[list[i] as int] == Entry::<T>::Vacant(
-+                        if i + 1 < list.len() {
-+                            list[i + 1]
-+                        } else {
-+                            slab.entries@.len() as usize
-+                        },
-+                    )
-+                } by {
-+                    let j = holes.len() - 1 - i;
-+                    assert(list[i] == holes[j]);
-+                    if i + 1 < list.len() {
-+                        assert(list[i + 1] == holes[j - 1]);
-+                        assert(holes[0] < holes[j]);
-+                    }
-+                }
-+                assert forall|a: int, b: int|
-+                    0 <= a < list.len() && 0 <= b < list.len() && a != b implies list[a]
-+                    != list[b] by {
-+                    assert(list[a] == holes[holes.len() - 1 - a]);
-+                    assert(list[b] == holes[holes.len() - 1 - b]);
-+                }
-+                assert forall|k: int|
-+                    0 <= k < slab.entries@.len() && (#[trigger] slab.entries@[k]) is Vacant implies list.contains(
-+                    k as usize,
-+                ) by {
-+                    assert(slots[k] is None);
-+                    assert(holes.contains(k as usize));
-+                    let j = choose|j: int| 0 <= j < holes.len() && holes[j] == k as usize;
-+                    assert(list[holes.len() - 1 - j] == k as usize);
-+                }
-+                slab.lemma_wf_intro(list);
++                lemma_close_hole_chain(before, slab, first_vacant_index);
              }
          } else {
 -            unreachable!()

@@ -1,7 +1,8 @@
 # Verifying `slab` with Verus (2026-10-16)
 
-Crate: `slab` 0.4.12, this fork's `master` @ 7d1d8ab. Verus 0.2026.05.03.8b81855 on rustc 1.95.0,
-using the bare `verus` binary and its bundled vstd. Every run uses `--no-cheating`.
+Crate: `slab` 0.4.12, this fork's `master` @ 7d1d8ab. Verus 0.2026.10.18.7d82994 (first verified with 0.2026.05.03.8b81855; see
+[Porting to Verus 0.2026.10.18](#porting-to-verus-20261018)), using the bare `verus` binary and its
+bundled vstd. The normal build uses rustc 1.95.0. Every run uses `--no-cheating`.
 Annotated crate: [`slab/`](slab/). Diff against upstream: [`upstream.diff`](upstream.diff).
 Specifications and proofs were written by Claude (Opus 5.5) in Claude Code on 2026-10-16, from
 the crate's documentation, its tests and the code. No human-written spec existed.
@@ -10,15 +11,15 @@ the crate's documentation, its tests and the code. No human-written spec existed
 
 | | |
 |---|---|
-| Verus `--no-cheating`, default features (`std`) | **73 verified, 0 errors**, 1.9 s wall clock (2.7 s SMT, 5 threads) |
-| Verus `--no-cheating`, no features (`no_std`) | 73 verified, 0 errors |
+| Verus `--no-cheating`, default features (`std`) | **74 verified, 0 errors**, 3.5 s wall clock (3.6 s SMT, 5 threads) |
+| Verus `--no-cheating`, no features (`no_std`) | 74 verified, 0 errors |
 | `assume`, `admit`, `external_body`, `assume_specification`, axioms, `uninterp` in the crate | **none** (`--no-cheating` rejects them) |
-| Verified | 21 upstream functions of `Slab`/`VacantEntry`, the logic of `shrink_to_fit`, and the 3 functions of `Builder` (209 non-comment lines of upstream code), plus 3 std stand-ins, 29 lemmas and 7 example clients |
+| Verified | 21 upstream functions of `Slab`/`VacantEntry`, the logic of `shrink_to_fit`, and the 3 functions of `Builder` (209 non-comment lines of upstream code), plus 3 std stand-ins, 30 lemmas and 7 example clients |
 | Trusted, not verified | everything outside `verus!` blocks: 42 upstream functions (327 lines), plus the serde module, listed in [Trusted base](#trusted-base) |
 | Normal `cargo build` of the annotated crate | passes with default features, `--no-default-features`, `--features serde` and both; 0 warnings |
 | Upstream tests on the annotated crate | 47/47 integration, 38/38 doc, 2/2 serde (the same counts as upstream) |
 | Negative controls | 17/17 injected bugs rejected, including the pre-#102 `FromIterator` bug (issue #100) |
-| Proof stability | same result with SMT seeds 1, 7, 42 and 1234 |
+| Proof stability | same result with SMT seeds 0 to 19, 42 and 1234 |
 | Upstream finding | `get2_mut` panics when a key is past the last slot, where the docs promise `None` ([F1](#findings-in-the-crate)) |
 
 ## The specification
@@ -189,7 +190,7 @@ unchanged.
 - `requires`/`ensures` on 28 functions.
 - Invariants on 4 loops.
 - 42 `proof` blocks.
-- 30 spec functions and 29 lemmas, in `spec.rs` and `builder.rs`.
+- 30 spec functions and 30 lemmas, in `spec.rs` and `builder.rs`.
 - `verified_examples.rs`.
 
 ## Negative controls (all rejected)
@@ -233,6 +234,27 @@ contracts. A vacuous or too-weak spec would make these proofs fail.
 - **`try_remove` test.** Returns `Some(1)`, then `None`. `contains` is false afterwards.
 - **`retain` docs.** Given a closure with `ensures keep == (key == k1 || *old(val) == 1)`, the proof shows that `k1` and `k2` stay, `k3` goes, `len() == 2`, and the next `insert` returns `k3`.
 - **Upstream test `from_iterator_issue_100`, first case, through the `Builder`.** The next three `insert`s return 0, 2 and 3.
+
+## Porting to Verus 0.2026.10.18
+
+Verus 0.2026.10.18.7d82994 (rustc 1.99.1) needed two proof-only changes. No executable code changed.
+
+- **`for` loop iterator.** vstd now wraps a `for` loop's iterator in `VerusForLoopWrapper`, so the
+  `retain` invariant `iter.end == pre@.len()` becomes `iter.snapshot.end == pre@.len()`.
+- **Unstable `Builder` proofs.** `Builder::build` exceeded the rlimit, even at 3x. Profiling showed
+  that about two thirds of the quantifier instantiations came from the ordering fact in
+  `lemma_vacant_keys_from` (`forall|i, j| i < j ==> keys[i] < keys[j]`), which is quadratic in the
+  number of holes.
+  - The proof for `build`'s last case (the #102 fix) moved into a new lemma,
+    `lemma_close_hole_chain`, in `builder.rs`. Its proof is unchanged, except that
+    `lemma_vacant_keys_from` is now called inside each `assert ... by` that needs it rather than
+    once for the whole proof.
+  - `Builder::pair` failed on some seeds for the same reason, so its two calls to
+    `lemma_vacant_keys_from` were scoped the same way.
+  - Moving the proof into the lemma without scoping the calls still left 5 of 14 seeds failing,
+    in the new lemma or in `pair`. With the calls scoped, all 22 seeds checked pass.
+- **Negative controls.** All 17 are still rejected. M7 is now rejected by an rlimit in the
+  `recreate_vacant_list` loop rather than by the assertion before the `break`.
 
 ## Verus notes from this pass
 
