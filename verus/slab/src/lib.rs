@@ -1636,7 +1636,7 @@ impl<T> Slab<T> {
         }
         for i in iter: 0..self.entries.len()
             invariant
-                iter.end == pre@.len(),
+                iter.snapshot.end == pre@.len(),
                 f == f0,
                 forall|key: usize, value: &mut T| f.requires((key, value)),
                 self.wf(),
