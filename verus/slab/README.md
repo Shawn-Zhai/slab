@@ -5,9 +5,9 @@ Results, contracts, the trusted base and the audited list of code changes are in
 [`../VERIFICATION.md`](../VERIFICATION.md); the full diff against upstream is
 [`../upstream.diff`](../upstream.diff).
 
-- `src/lib.rs`, `src/builder.rs`: upstream code. Everything inside a `verus! { ... }` block is
-  verified. Everything outside one is trusted (not verified), marked
-  `#[cfg_attr(verus_keep_ghost, verifier::external)]` with a `// TRUSTED (not verified): reason` comment.
+- `src/lib.rs`, `src/builder.rs`: upstream code, verified (inside `verus! { ... }` blocks).
+- `src/trusted.rs`: upstream code that is trusted, not verified. Verus skips the module
+  (`#[verifier::external]` on its declaration); each item has a `// T<n>: reason` comment.
 - `src/spec.rs`: the specification (abstract state, invariant, lemmas). Ghost code only; nothing in it is trusted.
 - `src/std_ext.rs`: verified stand-ins for `<[T]>::get_mut` and `mem::replace`, which vstd does not specify.
 - `src/verified_examples.rs`: verified clients that prove documented examples from the contracts.

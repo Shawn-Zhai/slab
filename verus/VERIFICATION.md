@@ -17,7 +17,7 @@ Specifications for `iter`, `Iter` and `IndexMut` were added on 2026-10-26 (see
 | Verus `--no-cheating`, no features (`no_std`) | 94 verified, 0 errors |
 | `assume`, `admit`, `external_body`, `assume_specification`, axioms, `uninterp` in the crate | **none** (`--no-cheating` rejects them) |
 | Verified | 28 upstream functions of `Slab`/`VacantEntry`/`Iter`, the logic of `shrink_to_fit`, and the 3 functions of `Builder` (253 non-comment lines of upstream code), plus 3 std stand-ins, 33 lemmas and 11 example clients |
-| Trusted, not verified | everything outside `verus!` blocks: 35 upstream functions (283 lines), plus the serde module, listed in [Trusted base](#trusted-base) |
+| Trusted, not verified | everything in [`trusted.rs`](slab/src/trusted.rs): 35 upstream functions (283 lines), plus the serde module, listed in [Trusted base](#trusted-base) |
 | Normal `cargo build` of the annotated crate | passes with default features, `--no-default-features`, `--features serde` and both; 0 warnings |
 | Upstream tests on the annotated crate | 47/47 integration, 38/38 doc, 2/2 serde (the same counts as upstream) |
 | Negative controls | 22/22 injected bugs rejected, including the pre-#102 `FromIterator` bug (issue #100) |
@@ -93,11 +93,13 @@ The docs leave these unstated. The contracts fix them to what the code does.
 Under `--no-cheating` the crate cannot contain `external_body`, `assume_specification`, `uninterp`
 or axioms. The only way to mark code as trusted is to leave it unverified.
 
-All trusted code sits outside the `verus!` blocks and is compiled exactly as upstream wrote it,
-except the `shrink_to_fit` shell. Each item is marked
-`#[cfg_attr(verus_keep_ghost, verifier::external)]` with a `// TRUSTED (not verified): reason`
-comment (`grep -n TRUSTED slab/src/lib.rs`). The rule is simple: code inside `verus!` is verified,
-and code outside it is trusted. The trusted code is the reason column in this table and nothing more.
+All trusted code is in [`slab/src/trusted.rs`](slab/src/trusted.rs), apart from serde (T9), which
+keeps its own file. `lib.rs` declares the module with `#[cfg_attr(verus_keep_ghost,
+verifier::external)]`, so Verus skips the whole file, and normal builds compile it like any other
+module. The file opens with this table, and each item carries a `// T<n>: reason` comment. Its items
+are upstream's code moved there unchanged, doc comments included, except the `shrink_to_fit` shell;
+`python3 check_trusted.py` (from `verus/`) checks each item against upstream `src/lib.rs`. The rule is
+simple: `lib.rs`, `builder.rs` and `std_ext.rs` are verified, and `trusted.rs` is not.
 
 | id | Items | Upstream lines | Why it cannot be verified |
 |---|---|---|---|
@@ -158,10 +160,11 @@ than the capacity.
 
 ## Changes to the crate (audit of `upstream.diff`)
 
-- `lib.rs`: 82 lines removed, 834 added. Most additions are contracts, proof blocks, `verus!`
-  block boundaries and `TRUSTED` comments.
+- `lib.rs`: 850 lines removed, 672 added. Most of the removed lines are the trusted items, which
+  moved unchanged to `trusted.rs`. Most additions are contracts, proof blocks and `verus!` block
+  boundaries.
 - `builder.rs`: 7 removed, 308 added.
-- New files: `spec.rs` (1057 lines), `std_ext.rs` (57), `verified_examples.rs` (270).
+- New files: `spec.rs` (1057 lines), `std_ext.rs` (57), `trusted.rs` (894), `verified_examples.rs` (270).
 - `serde.rs` and `tests/` are unchanged.
 
 ### Executable code
@@ -195,6 +198,9 @@ unchanged.
   normal builds), and `vstd/std` follows slab's `std` feature.
 - `rust-version` goes from 1.51 to 1.95, and `rust-toolchain.toml` pins 1.95.0.
 - The ghost-only `IndexSpecImpl` impl, `Iter`'s iterator-spec impls and the `IteratorSpec` import are `#[cfg(verus_keep_ghost)]`.
+- The trusted items live in the private module `trusted`. `IntoIter`, `IterMut` and `Drain` are defined
+  there and re-exported from the crate root, so the public paths (`slab::IntoIter` and so on) are
+  unchanged.
 
 ### Ghost-only additions
 
@@ -322,8 +328,8 @@ be replaced by upstream's calls. That is not done here.
   library seams (`panic_fmt`) would need `assume_specification`. vstd's `unreached()`,
   `runtime_assert()` and `Option::expect` are the replacements that `--no-cheating` accepts.
 - **`verus!` rewrites `for` loops even in `#[verifier::external]` items.** Trusted code with `for`
-  loops over unspecified iterators therefore has to live outside `verus!`. I put all trusted code
-  outside, which also makes the boundary easy to audit.
+  loops over unspecified iterators therefore has to live outside `verus!`. All of it is in
+  `trusted.rs`, which Verus skips through one `#[verifier::external]` on the module declaration.
 - **Trait impls are all-or-nothing.** One method of a trait impl cannot be external, which is why
   `clone` goes along with `clone_from`. (In 0.2026.05.03, vstd's `IndexMut` declared no method, so
   `index_mut` could not carry a precondition. The new vstd gives it `index_req`.)
