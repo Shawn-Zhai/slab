@@ -1,0 +1,330 @@
+[
+  {
+    "key": "imports",
+    "status": "changed",
+    "fingerprint": "4934555f99f5fb7d",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "vstd imports (prelude, unreached, runtime_assert), the std_ext stand-ins, and imports that moved with the trusted items into trusted.rs. Checked: replacing every `vstd::prelude::*` glob with explicit imports of the names the normal build needs (`verus`; `Seq` and `View` in builder.rs) leaves the MIR identical in both configurations (a one-token control edit does change it), so the glob changes no name or method resolution in compiled code."
+  },
+  {
+    "key": "fn iter_next",
+    "status": "added",
+    "fingerprint": "b4005d96a55fd267",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "New: the body of Iter::next (upstream loop over Enumerate<slice::Iter>), on the fields of the new Iter representation, so the type invariant is checked once. Same items, same order."
+  },
+  {
+    "key": "fn iter_next_back",
+    "status": "added",
+    "fingerprint": "b8584aeb50b87b23",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "New: the body of Iter::next_back, as for iter_next. Key of the last entry is front + (n - 1), as Enumerate computes it."
+  },
+  {
+    "key": "fn mem_replace",
+    "status": "added",
+    "fingerprint": "418e692654983bfd",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "New verified stand-in for core::mem::replace, built on mem::swap. Measured (release asm): identical code to upstream for u64 values. For 512-byte values #160 still holds (an unused result is not copied), but each removal re-tests the old tag (~3 instructions) and a used result goes through a partial stack copy (138 vs 45 instructions)."
+  },
+  {
+    "key": "fn slice_get_mut",
+    "status": "added",
+    "fingerprint": "9fdadc2d703d6278",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "New verified stand-in for <[T]>::get_mut, built on split_at_mut + first_mut. vstd now specifies get_mut, so this could be removed."
+  },
+  {
+    "key": "fn vec_get_mut",
+    "status": "added",
+    "fingerprint": "8b019307aafc5a80",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "New verified stand-in for Vec::get_mut, built on checked IndexMut. Could be removed now that vstd specifies get_mut."
+  },
+  {
+    "key": "impl Builder :: fn build",
+    "status": "changed",
+    "fingerprint": "09f3770f58bfb357",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "unreachable!() -> vstd unreached() (2x): proved unreachable; if reached it still panics, with \"unreached_external\" (checked in the vstd linked at run time)."
+  },
+  {
+    "key": "impl Builder :: fn with_capacity",
+    "status": "changed",
+    "fingerprint": "ec0488c72c2912ad",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Struct literal bound to a variable so a proof can name it; same value returned."
+  },
+  {
+    "key": "impl Clone for Iter :: fn clone",
+    "status": "changed",
+    "fingerprint": "6a73a76ff5fa70dc",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Follows the new Iter fields (entries slice + front); copies them."
+  },
+  {
+    "key": "impl DoubleEndedIterator for Iter :: fn next_back",
+    "status": "changed",
+    "fingerprint": "f54f77aefc79bd28",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Body moved into iter_next_back; debug_assert_eq!(self.len, 0) removed (proved instead), so debug builds no longer check it."
+  },
+  {
+    "key": "impl Iterator for Iter :: fn next",
+    "status": "changed",
+    "fingerprint": "3ef896c99d687f28",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Body moved into iter_next; debug_assert_eq!(self.len, 0) removed (proved instead)."
+  },
+  {
+    "key": "impl Slab :: fn contains",
+    "status": "changed",
+    "fingerprint": "9ce91d3ce2a996d3",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Reference pattern Some(&Entry::Occupied(_)) -> match ergonomics; same match."
+  },
+  {
+    "key": "impl Slab :: fn get2_mut",
+    "status": "changed",
+    "fingerprint": "9dd1ccd8467e8213",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "assert!(key1 != key2) -> runtime_assert, which in the vstd linked at run time (crates.io 0.0.0-2026-05-06) is assert!(b): equal keys still panic, with message \"assertion failed: b\" reported inside vstd. split_at_mut via as_mut_slice(); get_mut -> slice_get_mut; match ergonomics."
+  },
+  {
+    "key": "impl Slab :: fn get_mut",
+    "status": "changed",
+    "fingerprint": "f1fb1eaf76fe9e81",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Vec::get_mut -> vec_get_mut stand-in; match ergonomics."
+  },
+  {
+    "key": "impl Slab :: fn insert_at",
+    "status": "changed",
+    "fingerprint": "639d37dbc2cf8275",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "self.len += 1 moved after the branch (differs only if push unwinds; fixes F2); unreachable!() -> unreached(); match ergonomics (*next)."
+  },
+  {
+    "key": "impl Slab :: fn iter",
+    "status": "changed",
+    "fingerprint": "978544419c30f494",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Builds the new Iter representation: entries slice (as_slice) and front key 0, instead of entries.iter().enumerate()."
+  },
+  {
+    "key": "impl Slab :: fn new",
+    "status": "changed",
+    "fingerprint": "26bf043e156a9868",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Struct literal bound to a variable so a proof can name it; still const fn, same value."
+  },
+  {
+    "key": "impl Slab :: fn recreate_vacant_list",
+    "status": "changed",
+    "fingerprint": "a9acd470e1c21db9",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "for over iter_mut().enumerate().rev() -> index while loop, same order and same early break; match ergonomics."
+  },
+  {
+    "key": "impl Slab :: fn remove_vacant_tail",
+    "status": "added",
+    "fingerprint": "7812345bd3de21f6",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "New: the first part of upstream shrink_to_fit, moved unchanged except while let -> while matches!(..) (while let is unsupported)."
+  },
+  {
+    "key": "impl Slab :: fn shrink_to_fit",
+    "status": "changed",
+    "fingerprint": "b50c70185760c66c",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Everything before entries.shrink_to_fit() moved into remove_vacant_tail."
+  },
+  {
+    "key": "impl Slab :: fn try_remove",
+    "status": "changed",
+    "fingerprint": "1b2f14864a9b1e65",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "get_mut -> vec_get_mut; mem::replace -> mem_replace (see that entry for the measured codegen difference with large values); unreachable!() -> unreached(); val.into() -> Some(val)."
+  },
+  {
+    "key": "impl Slab :: fn with_capacity",
+    "status": "changed",
+    "fingerprint": "aba9fbea79b2ce9c",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Struct literal bound to a variable so a proof can name it; same value."
+  },
+  {
+    "key": "impl VacantEntry :: fn insert",
+    "status": "changed",
+    "fingerprint": "578b39360ab26d67",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "get_mut -> vec_get_mut; unreachable!() -> unreached(); match ergonomics."
+  },
+  {
+    "key": "impl View for Builder",
+    "status": "added",
+    "fingerprint": "a0fb08e831d5771d",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Ghost-only View impl; in a normal build only `type V` remains, which no code uses."
+  },
+  {
+    "key": "impl View for Builder :: type V",
+    "status": "added",
+    "fingerprint": "f57ca8821773a171",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "See impl View for Builder."
+  },
+  {
+    "key": "impl ops :: Index for Slab :: fn index",
+    "status": "changed",
+    "fingerprint": "e5ff6119b9554ce6",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "panic!(\"invalid key\") -> self.get(key).expect(\"invalid key\"): same message and caller location (#[track_caller])."
+  },
+  {
+    "key": "impl ops :: IndexMut for Slab :: fn index_mut",
+    "status": "changed",
+    "fingerprint": "0fcc2e11a5dc7dd7",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "panic!(\"invalid key\") -> vec_get_mut + .expect(\"invalid key\"): same message and caller location."
+  },
+  {
+    "key": "struct Iter",
+    "status": "changed",
+    "fingerprint": "b46d5a2b9e3e5dea",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Representation: Enumerate<slice::Iter<Entry<T>>> -> remaining slice + front key (vstd specifies neither Enumerate nor slice::Iter::next_back). Debug output unchanged. Reverse and for-loop iteration ~3-4% slower in a benchmark."
+  },
+  {
+    "key": "imports",
+    "status": "changed",
+    "fingerprint": "7a6c5814d928bc6f",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "vstd imports (prelude, unreached, runtime_assert), the std_ext stand-ins, and imports that moved with the trusted items into trusted.rs. Checked: replacing every `vstd::prelude::*` glob with explicit imports of the names the normal build needs (`verus`; `Seq` and `View` in builder.rs) leaves the MIR identical in both configurations (a one-token control edit does change it), so the glob changes no name or method resolution in compiled code."
+  },
+  {
+    "key": "file Cargo.toml",
+    "status": "changed",
+    "fingerprint": "55c64192377d72d9",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "vstd dependency (provides verus!, erases ghost code); vstd/std follows std; rust-version 1.51 -> 1.95."
+  },
+  {
+    "key": "file rust-toolchain.toml",
+    "status": "added",
+    "fingerprint": "a0b175a09ecfd5e8",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Pins Rust 1.95.0, which vstd needs."
+  },
+  {
+    "key": "trust src/builder.rs: #[cfg(verus_keep_ghost)] use crate::spec::*;",
+    "status": "trust marker",
+    "fingerprint": "7d23a7179e87976a",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Ghost-only import of the specification."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg(verus_keep_ghost)] pub mod spec;",
+    "status": "trust marker",
+    "fingerprint": "0363e3922e83e59e",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "The specification module: spec and proof functions only."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg(verus_keep_ghost)] use crate::spec::*;",
+    "status": "trust marker",
+    "fingerprint": "12bffc5947115fd4",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Ghost-only import of the specification."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg(verus_keep_ghost)] mod verified_examples;",
+    "status": "trust marker",
+    "fingerprint": "06dc29a0525a0057",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Verified example clients; never called."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg_attr(verus_keep_ghost, verifier::external)] mod trusted;",
+    "status": "trust marker",
+    "fingerprint": "451a75f8ead06162",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "The trusted (unverified) upstream code; check_trusted.py checks it is verbatim upstream except shrink_to_fit."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg(verus_keep_ghost)] // ghost-only: vstd's `std_specs` exist only under Verus use vstd::std_specs::iter::IteratorSpec;",
+    "status": "trust marker",
+    "fingerprint": "197d314f888b7246",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Ghost-only: vstd spec trait impl or import (exists only under Verus)."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg(verus_keep_ghost)] // ghost-only: vstd's `std_specs` exist only under Verus impl<T> vstd::std_specs::core::IndexSpecImpl<usize> for Slab<T> {",
+    "status": "trust marker",
+    "fingerprint": "5a682204e55c4096",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Ghost-only: vstd spec trait impl or import (exists only under Verus)."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg(verus_keep_ghost)] // ghost-only: vstd's `std_specs` exist only under Verus impl<'a, T> vstd::std_specs::iter::IteratorSpecImpl for Iter<'a, T> {",
+    "status": "trust marker",
+    "fingerprint": "4a0037ce60a423f9",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Ghost-only: vstd spec trait impl or import (exists only under Verus)."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg(verus_keep_ghost)] impl<'a, T> vstd::std_specs::iter::DoubleEndedIteratorSpecImpl for Iter<'a, T> {",
+    "status": "trust marker",
+    "fingerprint": "8702c03723fcca86",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Ghost-only: vstd spec trait impl or import (exists only under Verus)."
+  },
+  {
+    "key": "trust src/lib.rs: #[cfg(verus_keep_ghost)] impl<'a, T> vstd::std_specs::iter::ExactSizeIteratorSpecImpl for Iter<'a, T> {",
+    "status": "trust marker",
+    "fingerprint": "55efdf9de9ef336d",
+    "reviewer": "Shawn",
+    "note": "",
+    "agent_note": "Ghost-only: vstd spec trait impl or import (exists only under Verus)."
+  }
+]

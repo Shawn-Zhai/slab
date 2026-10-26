@@ -13,6 +13,13 @@ Results, contracts, the trusted base and the audited list of code changes are in
 - `src/verified_examples.rs`: verified clients that prove documented examples from the contracts.
 - `src/serde.rs`, `tests/`: unchanged from upstream.
 
+Scripts in `../`:
+- `negative_controls.py`: injected bugs that Verus must reject.
+- `check_trusted.py`: `src/trusted.rs` is verbatim upstream.
+- `detect_changes.py`: every change to executable code, against human approvals in
+  `approved_changes.json`; writes `changes_report.md`.
+- `test_detect_changes.py`: injected edits that `detect_changes.py` must flag or ignore.
+
 ## Reproduce
 
 Verus 0.2026.10.18.7d82994 (bare `verus` binary with its bundled vstd; with 0.2026.05.03, `cargo verus`

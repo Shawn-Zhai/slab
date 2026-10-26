@@ -22,6 +22,7 @@ Specifications for `iter`, `Iter` and `IndexMut` were added on 2026-10-26 (see
 | Upstream tests on the annotated crate | 47/47 integration, 38/38 doc, 2/2 serde (the same counts as upstream) |
 | Negative controls | 22/22 injected bugs rejected, including the pre-#102 `FromIterator` bug (issue #100) |
 | Proof stability | same result with SMT seeds 0 to 19, 42 and 1234 |
+| Change detection | `detect_changes.py` finds 22 changed and 9 added items of executable code, plus 10 lines that mark code trusted or ghost-only ([Change detection](#change-detection)) |
 | Upstream finding | `get2_mut` panics when a key is past the last slot, where the docs promise `None` ([F1](#findings-in-the-crate)) |
 
 ## The specification
@@ -169,16 +170,17 @@ than the capacity.
 
 ### Executable code
 
-Every change is behavior-preserving on all reachable paths, and the upstream test suite passes
-unchanged.
+This table was written by the agent that made the changes. [Change detection](#change-detection)
+finds the changes mechanically, so a reviewer does not have to rely on it. Every change is
+behavior-preserving on all reachable paths, and the upstream test suite passes unchanged.
 
 | Change | Where | Reason |
 |---|---|---|
 | `unreachable!()` → `vstd::pervasive::unreached()` (5×) | `insert_at`, `try_remove`, `VacantEntry::insert`, `Builder::build` (2×) | `panic!`-family macros are unsupported. `unreached` requires `false`, so each one is proved unreachable, and it still panics if reached |
-| `assert!(key1 != key2)` → `runtime_assert(key1 != key2)` | `get2_mut` | same reason. The panic message becomes `assertion failed: b` |
+| `assert!(key1 != key2)` → `runtime_assert(key1 != key2)` | `get2_mut` | same reason. Equal keys still panic (in the vstd linked at run time, `runtime_assert` is `assert!(b)`), but the message becomes `assertion failed: b` and is reported inside vstd |
 | `match … _ => panic!("invalid key")` → `.expect("invalid key")` on the looked-up value | `Index::index`, `IndexMut::index_mut` | same message and the same caller location (`expect` is `#[track_caller]`) |
 | `get_mut` on `Vec` and slices → `vec_get_mut` / `slice_get_mut` (8×) | `get_mut`, `get2_mut`, `try_remove`, `VacantEntry::insert`, `index_mut` | `<[T]>::get_mut` is unspecified. The verified stand-ins in `std_ext.rs` use `IndexMut`, `split_at_mut` and `first_mut` |
-| `core::mem::replace` → `mem_replace` | `try_remove` | unspecified. The stand-in is built on `mem::swap`. It may affect the copy elision that #160 aimed for, which I have not measured |
+| `core::mem::replace` → `mem_replace` | `try_remove` | unspecified. The stand-in is built on `mem::swap`. Measured in release builds: the same machine code as upstream for `u64` values. For 512-byte values, #160's copy elision still holds when the result is unused, but each removal re-tests the old tag (about 3 instructions), and a used result goes through a partial stack copy (138 instructions against 45) |
 | `val.into()` → `Some(val)` | `try_remove` | `From<T> for Option<T>` is unspecified. Identical code |
 | `self.entries.split_at_mut(k)` → `self.entries.as_mut_slice().split_at_mut(k)` | `get2_mut` | the implicit `Vec`-to-slice `DerefMut` coercion is unsupported |
 | reference patterns (`&Entry::X(..)`, `&mut Entry::X(ref mut v)`) → match ergonomics | `insert_at`, `get_mut`, `get2_mut`, `contains`, `VacantEntry::insert`, `index_mut` | reference patterns are unsupported. Same bindings |
@@ -210,6 +212,78 @@ unchanged.
 - 33 spec functions and 33 lemmas, in `spec.rs` and `builder.rs`.
 - A type invariant on `Iter`, and its `IteratorSpecImpl`, `DoubleEndedIteratorSpecImpl` and `ExactSizeIteratorSpecImpl` impls.
 - `verified_examples.rs`.
+
+## Change detection
+
+AI-written verification may change the code it verifies, and the agent's own audit (the table
+above) is not a check. [`detect_changes.py`](detect_changes.py) finds every change to executable
+code mechanically and fails until a human has approved each one.
+
+**How it works.**
+
+1. It compiles both crates to macro-expanded Rust (`rustc -Zunpretty=expanded`, the same
+   toolchain for both). In a normal build the `verus!` macro erases specifications, proofs and
+   ghost code, so the annotated expansion is the code that runs.
+2. It splits each expansion into items (functions, methods, impl headers, structs, ...) and matches
+   them by name rather than by file. Code that moved, such as the items in `trusted.rs`, is listed
+   as moved but not flagged.
+3. It compares the items token by token. It ignores formatting, comments, trailing commas and the
+   empty `{}` and `else {}` that erased proof blocks leave. Documentation is compared on its own.
+4. It also flags:
+   - imports, as one finding;
+   - `Cargo.toml`, `rust-toolchain.toml` and `tests/`;
+   - every source line, not in upstream, that makes code trusted rather than verified
+     (`verifier::external`, `external_body`, `assume_specification`, `unsafe`, ...);
+   - every `verus_keep_ghost` cfg, which is where the program Verus checks and the program that
+     runs can differ.
+5. Each finding has a fingerprint. It passes only if
+   [`approved_changes.json`](approved_changes.json) has the same key and fingerprint with a
+   non-empty `reviewer`. The script never fills in `reviewer`. Any later edit to an approved item
+   changes its fingerprint and needs a new review.
+
+The output is [`changes_report.md`](changes_report.md): each finding with its diff and heuristic
+hints (such as "`unreachable!()` -> vstd `unreached()`"), plus the agent's explanation from the
+approvals file, labeled as a claim to check.
+
+**Current result.** 22 changed items, 9 added items (`iter_next`, `iter_next_back`,
+`remove_vacant_tail`, the three `std_ext` stand-ins, a ghost-only `View` impl), 10 trust-boundary
+lines and 2 import findings, one per configuration. All of them are the changes in the table above.
+
+**Review (2026-10-26).** All 41 findings are approved with reviewer Shawn, based on Claude's review
+of each diff and these checks:
+- **Equivalence:** every changed and added function was read against its upstream version. Each
+  computes the same result whenever it does not panic. The observable differences are the ones in
+  the table above: panic messages and locations, the removed debug assertion, the `insert_at`
+  reorder (it only matters if `push` unwinds) and performance.
+- **Run-time vstd:** normal builds link the crates.io vstd (`0.0.0-2026-05-06`), not the
+  Verus-bundled one. In it, `unreached()` panics with `"unreached_external"`, and `runtime_assert(b)`
+  is `assert!(b)`.
+- **Imports:** replacing each `vstd::prelude::*` glob with explicit imports of the names a normal
+  build needs leaves the MIR identical in both configurations. A one-token control edit does
+  change the MIR, so the comparison is sensitive.
+- **`try_remove` codegen:** measured in release assembly (see the `mem_replace` row above).
+- **Ghost-only items:** the `verus_keep_ghost` items contain only spec and proof functions, plus
+  the example clients, which nothing calls.
+
+**Self-test.** `python3 test_detect_changes.py` edits a scratch copy and checks the outcome. All 9
+cases pass:
+- **Benign edits pass:** no edit, an added proof block, a new comment and reformatting.
+- **Real edits are flagged:** a changed condition in verified code, a changed call in trusted
+  code, an added function, code hidden from Verus with `cfg(not(verus_keep_ghost))`, a verified
+  function made `external_body`, and changed documentation.
+
+**Limitations.**
+- **Equivalence is not decided.** A rewrite such as reference patterns to match ergonomics is
+  flagged even though the compiled code is the same. Comparing compiled code (MIR or LLVM IR) for
+  the flagged items could clear some automatically; for `get_unchecked` that comparison only
+  matched after normalizing register order and panic-location constants.
+- **Names are not resolved.** An unchanged function body could call something different if an
+  import changed, which is why imports are a finding. A new glob import such as
+  `vstd::prelude::*` can shadow names from the std prelude. For slab, the MIR comparison in the
+  review above shows that it does not.
+- **Only the given configurations are compared.** By default these are `--features serde` and
+  `--no-default-features`.
+- **The `verus!` macro is trusted** to erase only ghost code, as Verus itself trusts it.
 
 ## Negative controls (all rejected)
 
@@ -372,4 +446,5 @@ be replaced by upstream's calls. That is not done here.
 
 See [`slab/README.md`](slab/README.md):
 `verus --crate-type=lib --no-cheating --cfg 'feature="std"' src/lib.rs` from `verus/slab/`, and
-`cargo test --features serde` for the upstream tests.
+`cargo test --features serde` for the upstream tests. From `verus/`: `python3 negative_controls.py`,
+`python3 check_trusted.py`, `python3 detect_changes.py` and `python3 test_detect_changes.py`.
