@@ -918,4 +918,140 @@ pub proof fn lemma_removed_keys_desc_prefix<T>(
     }
 }
 
+// ============================================================================== iterators
+
+/// The occupied slots of `slots` as `(key, value)` pairs in increasing key order, when the first
+/// slot has key `key`. `slab.iter()` yields `ref_pairs(occupied_pairs(slab@, 0))`.
+pub open spec fn occupied_pairs<T>(slots: Seq<Option<T>>, key: int) -> Seq<(usize, T)>
+    decreases slots.len(),
+{
+    if slots.len() == 0 {
+        Seq::empty()
+    } else {
+        occupied_pairs(slots.drop_last(), key) + match slots.last() {
+            Some(value) => seq![((key + slots.len() - 1) as usize, value)],
+            None => Seq::empty(),
+        }
+    }
+}
+
+/// The pairs with each value replaced by a reference to it, as `Iter` yields them.
+pub open spec fn ref_pairs<'a, T>(pairs: Seq<(usize, T)>) -> Seq<(usize, &'a T)> {
+    Seq::new(pairs.len(), |i: int| (pairs[i].0, &pairs[i].1))
+}
+
+/// The items left in an `Iter` whose remaining entries are `entries`, the first with key `front`.
+pub(crate) open spec fn iter_items<'a, T>(entries: Seq<Entry<T>>, front: usize) -> Seq<
+    (usize, &'a T),
+> {
+    ref_pairs(occupied_pairs(entries_view(entries), front as int))
+}
+
+/// There is one pair per occupied slot.
+pub proof fn lemma_occupied_pairs_len<T>(slots: Seq<Option<T>>, key: int)
+    ensures
+        occupied_pairs(slots, key).len() == num_occupied(slots),
+    decreases slots.len(),
+{
+    if slots.len() > 0 {
+        lemma_occupied_pairs_len(slots.drop_last(), key);
+    }
+}
+
+/// `occupied_pairs` from the front: the first slot gives the first pair if it is occupied.
+pub proof fn lemma_occupied_pairs_drop_first<T>(slots: Seq<Option<T>>, key: int)
+    requires
+        slots.len() > 0,
+    ensures
+        occupied_pairs(slots, key) == match slots[0] {
+            Some(value) => seq![(key as usize, value)],
+            None => Seq::empty(),
+        } + occupied_pairs(slots.drop_first(), key + 1),
+    decreases slots.len(),
+{
+    let head = match slots[0] {
+        Some(value) => seq![(key as usize, value)],
+        None => Seq::<(usize, T)>::empty(),
+    };
+    if slots.len() == 1 {
+        assert(slots.drop_last() =~= Seq::<Option<T>>::empty());
+        assert(slots.drop_first() =~= Seq::<Option<T>>::empty());
+        assert(occupied_pairs(slots.drop_last(), key) == Seq::<(usize, T)>::empty());
+        assert(occupied_pairs(slots.drop_first(), key + 1) == Seq::<(usize, T)>::empty());
+        assert(slots.last() == slots[0]);
+        assert(occupied_pairs(slots, key) =~= head + occupied_pairs(slots.drop_first(), key + 1));
+    } else {
+        let init = slots.drop_last();
+        lemma_occupied_pairs_drop_first(init, key);
+        assert(init.drop_first() =~= slots.drop_first().drop_last());
+        assert(slots.drop_first().last() == slots.last());
+        assert(occupied_pairs(slots, key) =~= head + occupied_pairs(slots.drop_first(), key + 1));
+    }
+}
+
+/// What the pairs are: each pair `(k, v)` has `slots[k - key] == Some(v)`, the keys increase, and
+/// every occupied slot has a pair.
+pub proof fn lemma_occupied_pairs<T>(slots: Seq<Option<T>>, key: int)
+    requires
+        0 <= key,
+        key + slots.len() <= usize::MAX + 1,
+    ensures
+        ({
+            let pairs = occupied_pairs(slots, key);
+            &&& pairs.len() == num_occupied(slots)
+            &&& forall|i: int|
+                #![trigger pairs[i]]
+                0 <= i < pairs.len() ==> {
+                    &&& key <= pairs[i].0 < key + slots.len()
+                    &&& slots[pairs[i].0 - key] == Some(pairs[i].1)
+                }
+            &&& forall|i: int, j: int|
+                #![trigger pairs[i], pairs[j]]
+                0 <= i < j < pairs.len() ==> pairs[i].0 < pairs[j].0
+            &&& forall|k: int|
+                0 <= k < slots.len() && (#[trigger] slots[k]) is Some ==> exists|i: int|
+                    #![trigger pairs[i]]
+                    0 <= i < pairs.len() && pairs[i].0 == key + k
+        }),
+    decreases slots.len(),
+{
+    lemma_occupied_pairs_len(slots, key);
+    if slots.len() > 0 {
+        let init = slots.drop_last();
+        lemma_occupied_pairs(init, key);
+        let p0 = occupied_pairs(init, key);
+        let pairs = occupied_pairs(slots, key);
+        assert forall|i: int| #![trigger pairs[i]] 0 <= i < p0.len() implies pairs[i] == p0[i] by {}
+        assert forall|i: int|
+            #![trigger pairs[i]]
+            0 <= i < pairs.len() implies {
+            &&& key <= pairs[i].0 < key + slots.len()
+            &&& slots[pairs[i].0 - key] == Some(pairs[i].1)
+        } by {
+            if i < p0.len() {
+                assert(init[p0[i].0 - key] == slots[p0[i].0 - key]);
+            }
+        }
+        assert forall|i: int, j: int|
+            #![trigger pairs[i], pairs[j]]
+            0 <= i < j < pairs.len() implies pairs[i].0 < pairs[j].0 by {
+            if j >= p0.len() {
+                assert(p0[i].0 < key + init.len());
+            }
+        }
+        assert forall|k: int|
+            0 <= k < slots.len() && (#[trigger] slots[k]) is Some implies exists|i: int|
+                #![trigger pairs[i]]
+                0 <= i < pairs.len() && pairs[i].0 == key + k by {
+            if k < init.len() {
+                assert(init[k] is Some);
+                let i = choose|i: int| #![trigger p0[i]] 0 <= i < p0.len() && p0[i].0 == key + k;
+                assert(pairs[i] == p0[i]);
+            } else {
+                assert(pairs[p0.len() as int].0 == key + k);
+            }
+        }
+    }
+}
+
 } // verus!

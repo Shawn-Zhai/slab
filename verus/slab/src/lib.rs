@@ -152,6 +152,8 @@ use core::{fmt, mem, ops, slice};
 use vstd::pervasive::{runtime_assert, unreached};
 #[allow(unused_imports)]
 use vstd::prelude::*;
+#[cfg(verus_keep_ghost)] // ghost-only: vstd's `std_specs` exist only under Verus
+use vstd::std_specs::iter::IteratorSpec;
 
 verus! {
 
@@ -282,24 +284,36 @@ pub struct IntoIter<T> {
     len: usize,
 }
 
+verus! {
+
 /// An iterator over the values stored in the `Slab`
-// TRUSTED (not verified): wraps std iterator adapters that Verus does not specify.
-#[cfg_attr(verus_keep_ghost, verifier::external)]
 pub struct Iter<'a, T> {
-    entries: iter::Enumerate<slice::Iter<'a, Entry<T>>>,
+    // Upstream: `entries: iter::Enumerate<slice::Iter<'a, Entry<T>>>`. Verus specifies neither
+    // `Enumerate` nor `slice::Iter::next_back`, so this holds the entries not yet visited, and
+    // `front` is the key of the first of them.
+    entries: &'a [Entry<T>],
+    front: usize,
     len: usize,
 }
 
-// TRUSTED (not verified): `Iter` is not verified.
-#[cfg_attr(verus_keep_ghost, verifier::external)]
 impl<T> Clone for Iter<'_, T> {
-    fn clone(&self) -> Self {
+    fn clone(&self) -> (r: Self)
+        ensures
+            r == *self,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        // Upstream: `entries: self.entries.clone()`.
         Self {
-            entries: self.entries.clone(),
+            entries: self.entries,
+            front: self.front,
             len: self.len,
         }
     }
 }
+
+} // verus!
 
 /// A mutable iterator over the values stored in the `Slab`
 // TRUSTED (not verified): wraps std iterator adapters that Verus does not specify.
@@ -878,13 +892,7 @@ impl<T> Slab<T> {
     {
         self.len == 0
     }
-}
 
-} // verus!
-
-// TRUSTED (not verified): methods that need features Verus does not support (reason on each).
-#[cfg_attr(verus_keep_ghost, verifier::external)]
-impl<T> Slab<T> {
     /// Return an iterator over the slab.
     ///
     /// This function should generally be **avoided** as it is not efficient.
@@ -909,14 +917,31 @@ impl<T> Slab<T> {
     /// assert_eq!(iterator.next(), Some((2, &2)));
     /// assert_eq!(iterator.next(), None);
     /// ```
-    // TRUSTED (not verified): `Iter` is not verified.
-    pub fn iter(&self) -> Iter<'_, T> {
+    pub fn iter(&self) -> (it: Iter<'_, T>)
+        requires
+            self.wf(),
+        ensures
+            it.remaining() == ref_pairs(occupied_pairs(self@, 0)),
+            it.decrease() is Some,
+    {
+        proof {
+            self.lemma_len_bound();
+            lemma_occupied_pairs_len(self@, 0);
+        }
+        // Upstream: `entries: self.entries.iter().enumerate()`.
         Iter {
-            entries: self.entries.iter().enumerate(),
+            entries: self.entries.as_slice(),
+            front: 0,
             len: self.len,
         }
     }
+}
 
+} // verus!
+
+// TRUSTED (not verified): a method that needs features Verus does not support (reason below).
+#[cfg_attr(verus_keep_ghost, verifier::external)]
+impl<T> Slab<T> {
     /// Return an iterator that allows modifying each value.
     ///
     /// This function should generally be **avoided** as it is not efficient.
@@ -1756,20 +1781,33 @@ impl<T> ops::Index<usize> for Slab<T> {
     }
 }
 
-} // verus!
-
-// TRUSTED (not verified): `index_mut` panics on a vacant key, and the `IndexMut`
-// specification in vstd admits no precondition that would rule this out.
-#[cfg_attr(verus_keep_ghost, verifier::external)]
+// `slab[key] = value` has the precondition of `slab[key]` (vstd's `index_req`, above).
 impl<T> ops::IndexMut<usize> for Slab<T> {
     #[track_caller]
-    fn index_mut(&mut self, key: usize) -> &mut T {
-        match self.entries.get_mut(key) {
-            Some(&mut Entry::Occupied(ref mut v)) => v,
-            _ => panic!("invalid key"),
+    fn index_mut(&mut self, key: usize) -> (value: &mut T)
+        ensures
+            *value == old(self)@[key as int]->Some_0,
+            final(self)@ == old(self)@.update(key as int, Some(*final(value))),
+            old(self).wf() ==> final(self).wf() && final(self).vacant_list() == old(
+                self,
+            ).vacant_list(),
+    {
+        proof {
+            if self.wf() {
+                self.lemma_same_shape_preserves_wf();
+            }
         }
+        // Upstream: `match self.entries.get_mut(key) { Some(&mut Entry::Occupied(ref mut v)) => v,
+        // _ => panic!("invalid key") }`.
+        let value = match vec_get_mut(&mut self.entries, key) {
+            Some(Entry::Occupied(v)) => Some(v),
+            _ => None,
+        };
+        value.expect("invalid key")
     }
 }
+
+} // verus!
 
 // TRUSTED (not verified): `IntoIter` is not verified.
 #[cfg_attr(verus_keep_ghost, verifier::external)]
@@ -1785,7 +1823,7 @@ impl<T> IntoIterator for Slab<T> {
     }
 }
 
-// TRUSTED (not verified): `Iter` is not verified.
+// TRUSTED (not verified): a trait method cannot require `wf()`, which the verified `iter` needs.
 #[cfg_attr(verus_keep_ghost, verifier::external)]
 impl<'a, T> IntoIterator for &'a Slab<T> {
     type Item = (usize, &'a T);
@@ -2051,21 +2089,66 @@ impl<T> FusedIterator for IntoIter<T> {}
 
 // ===== Iter =====
 
-// TRUSTED (not verified): `Iter` is not verified.
-#[cfg_attr(verus_keep_ghost, verifier::external)]
+verus! {
+
+impl<'a, T> Iter<'a, T> {
+    /// `len` counts the items left, and the keys of the entries left fit in a `usize`.
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        &&& self.front + self.entries@.len() <= usize::MAX
+        &&& self.len == iter_items(self.entries@, self.front).len()
+    }
+}
+
+#[cfg(verus_keep_ghost)] // ghost-only: vstd's `std_specs` exist only under Verus
+impl<'a, T> vstd::std_specs::iter::IteratorSpecImpl for Iter<'a, T> {
+    open spec fn obeys_prophetic_iter_laws(&self) -> bool {
+        true
+    }
+
+    /// The `(key, &value)` pairs not yet yielded, in increasing key order.
+    #[verifier::prophetic]
+    closed spec fn remaining(&self) -> Seq<Self::Item> {
+        iter_items(self.entries@, self.front)
+    }
+
+    #[verifier::prophetic]
+    open spec fn will_return_none(&self) -> bool {
+        true
+    }
+
+    closed spec fn decrease(&self) -> Option<nat> {
+        Some(self.entries@.len())
+    }
+
+    open spec fn peek(&self, index: int) -> Option<Self::Item> {
+        None
+    }
+}
+
+#[cfg(verus_keep_ghost)]
+impl<'a, T> vstd::std_specs::iter::DoubleEndedIteratorSpecImpl for Iter<'a, T> {
+    open spec fn peek_back(&self, index: int) -> Option<Self::Item> {
+        None
+    }
+}
+
+#[cfg(verus_keep_ghost)]
+impl<'a, T> vstd::std_specs::iter::ExactSizeIteratorSpecImpl for Iter<'a, T> {
+    closed spec fn exact_len(&self) -> usize {
+        self.len
+    }
+}
+
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = (usize, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        for (key, entry) in &mut self.entries {
-            if let Entry::Occupied(ref v) = *entry {
-                self.len -= 1;
-                return Some((key, v));
-            }
+        proof {
+            use_type_invariant(&*self);
         }
-
-        debug_assert_eq!(self.len, 0);
-        None
+        // One call updates the fields, so that the type invariant is checked once, after it.
+        iter_next(&mut self.entries, &mut self.front, &mut self.len)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -2073,33 +2156,150 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
-// TRUSTED (not verified): `Iter` is not verified.
-#[cfg_attr(verus_keep_ghost, verifier::external)]
 impl<T> DoubleEndedIterator for Iter<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        while let Some((key, entry)) = self.entries.next_back() {
-            if let Entry::Occupied(ref v) = *entry {
-                self.len -= 1;
-                return Some((key, v));
-            }
+        proof {
+            use_type_invariant(&*self);
         }
-
-        debug_assert_eq!(self.len, 0);
-        None
+        iter_next_back(&mut self.entries, self.front, &mut self.len)
     }
 }
 
-// TRUSTED (not verified): `Iter` is not verified.
-#[cfg_attr(verus_keep_ghost, verifier::external)]
 impl<T> ExactSizeIterator for Iter<'_, T> {
     fn len(&self) -> usize {
+        proof {
+            use_type_invariant(self);
+        }
         self.len
     }
 }
 
-// TRUSTED (not verified): `Iter` is not verified.
-#[cfg_attr(verus_keep_ghost, verifier::external)]
 impl<T> FusedIterator for Iter<'_, T> {}
+
+/// `Iter::next` on the fields of the iterator. Upstream:
+/// `for (key, entry) in &mut self.entries { if let Entry::Occupied(ref v) = *entry {
+/// self.len -= 1; return Some((key, v)); } } debug_assert_eq!(self.len, 0); None`.
+fn iter_next<'a, T>(entries: &mut &'a [Entry<T>], front: &mut usize, len: &mut usize) -> (item:
+    Option<(usize, &'a T)>)
+    requires
+        *old(front) + (*old(entries))@.len() <= usize::MAX,
+        *old(len) == iter_items((*old(entries))@, *old(front)).len(),
+    ensures
+        *final(front) + (*final(entries))@.len() <= usize::MAX,
+        ({
+            let items = iter_items((*old(entries))@, *old(front));
+            let rest = iter_items((*final(entries))@, *final(front));
+            &&& *final(len) == rest.len()
+            &&& if items.len() > 0 {
+                &&& rest == items.drop_first()
+                &&& item == Some(items[0])
+                &&& (*final(entries))@.len() < (*old(entries))@.len()
+            } else {
+                rest == items && item is None
+            }
+        }),
+    no_unwind
+{
+    let ghost items = iter_items((*entries)@, *front);
+    loop
+        invariant
+            *front + (*entries)@.len() <= usize::MAX,
+            iter_items((*entries)@, *front) == items,
+            *len == items.len(),
+            (*entries)@.len() <= (*old(entries))@.len(),
+            items == iter_items((*old(entries))@, *old(front)),
+        decreases (*entries)@.len(),
+    {
+        let slice: &'a [Entry<T>] = *entries;
+        match slice.split_first() {
+            Some((entry, rest)) => {
+                proof {
+                    lemma_occupied_pairs_drop_first(entries_view(slice@), *front as int);
+                    assert(entries_view(slice@).drop_first() =~= entries_view(rest@));
+                }
+                let key = *front;
+                *entries = rest;
+                *front += 1;
+                if let Entry::Occupied(ref v) = *entry {
+                    *len -= 1;
+                    proof {
+                        assert(items.drop_first() =~= iter_items((*entries)@, *front));
+                    }
+                    return Some((key, v));
+                }
+            },
+            None => {
+                // Upstream: `debug_assert_eq!(self.len, 0)`, which this proves.
+                proof {
+                    assert(*len == 0);
+                }
+                return None;
+            },
+        }
+    }
+}
+
+/// `Iter::next_back` on the fields of the iterator. Upstream:
+/// `while let Some((key, entry)) = self.entries.next_back() { if let Entry::Occupied(ref v) =
+/// *entry { self.len -= 1; return Some((key, v)); } } debug_assert_eq!(self.len, 0); None`.
+fn iter_next_back<'a, T>(entries: &mut &'a [Entry<T>], front: usize, len: &mut usize) -> (item:
+    Option<(usize, &'a T)>)
+    requires
+        front + (*old(entries))@.len() <= usize::MAX,
+        *old(len) == iter_items((*old(entries))@, front).len(),
+    ensures
+        front + (*final(entries))@.len() <= usize::MAX,
+        ({
+            let items = iter_items((*old(entries))@, front);
+            let rest = iter_items((*final(entries))@, front);
+            &&& *final(len) == rest.len()
+            &&& if items.len() > 0 {
+                &&& rest == items.drop_last()
+                &&& item == Some(items.last())
+                &&& (*final(entries))@.len() < (*old(entries))@.len()
+            } else {
+                rest == items && item is None
+            }
+        }),
+    no_unwind
+{
+    let ghost items = iter_items((*entries)@, front);
+    loop
+        invariant
+            front + (*entries)@.len() <= usize::MAX,
+            iter_items((*entries)@, front) == items,
+            *len == items.len(),
+            (*entries)@.len() <= (*old(entries))@.len(),
+            items == iter_items((*old(entries))@, front),
+        decreases (*entries)@.len(),
+    {
+        let slice: &'a [Entry<T>] = *entries;
+        let n = slice.len();
+        if n == 0 {
+            // Upstream: `debug_assert_eq!(self.len, 0)`, which this proves.
+            proof {
+                assert(*len == 0);
+            }
+            return None;
+        }
+        let (rest, last) = slice.split_at(n - 1);
+        proof {
+            assert(entries_view(slice@).drop_last() =~= entries_view(rest@));
+            assert(last@[0] == slice@.last());
+        }
+        *entries = rest;
+        let key = front + (n - 1);
+        if let Entry::Occupied(ref v) = last[0] {
+            *len -= 1;
+            proof {
+                assert(items.drop_last() =~= iter_items((*entries)@, front));
+            }
+            return Some((key, v));
+        }
+    }
+}
+
+} // verus!
 
 // ===== IterMut =====
 

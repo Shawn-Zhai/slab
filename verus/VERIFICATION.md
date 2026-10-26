@@ -6,19 +6,21 @@ bundled vstd. The normal build uses rustc 1.95.0. Every run uses `--no-cheating`
 Annotated crate: [`slab/`](slab/). Diff against upstream: [`upstream.diff`](upstream.diff).
 Specifications and proofs were written by Claude (Opus 5.5) in Claude Code on 2026-10-16, from
 the crate's documentation, its tests and the code. No human-written spec existed.
+Specifications for `iter`, `Iter` and `IndexMut` were added on 2026-10-26 (see
+[Newly verified with Verus 0.2026.10.18](#newly-verified-with-verus-20261018)).
 
 ## Headline
 
 | | |
 |---|---|
-| Verus `--no-cheating`, default features (`std`) | **74 verified, 0 errors**, 3.5 s wall clock (3.6 s SMT, 5 threads) |
-| Verus `--no-cheating`, no features (`no_std`) | 74 verified, 0 errors |
+| Verus `--no-cheating`, default features (`std`) | **94 verified, 0 errors**, 4.1 s wall clock (5.1 s SMT, 5 threads) |
+| Verus `--no-cheating`, no features (`no_std`) | 94 verified, 0 errors |
 | `assume`, `admit`, `external_body`, `assume_specification`, axioms, `uninterp` in the crate | **none** (`--no-cheating` rejects them) |
-| Verified | 21 upstream functions of `Slab`/`VacantEntry`, the logic of `shrink_to_fit`, and the 3 functions of `Builder` (209 non-comment lines of upstream code), plus 3 std stand-ins, 30 lemmas and 7 example clients |
-| Trusted, not verified | everything outside `verus!` blocks: 42 upstream functions (327 lines), plus the serde module, listed in [Trusted base](#trusted-base) |
+| Verified | 28 upstream functions of `Slab`/`VacantEntry`/`Iter`, the logic of `shrink_to_fit`, and the 3 functions of `Builder` (253 non-comment lines of upstream code), plus 3 std stand-ins, 33 lemmas and 11 example clients |
+| Trusted, not verified | everything outside `verus!` blocks: 35 upstream functions (283 lines), plus the serde module, listed in [Trusted base](#trusted-base) |
 | Normal `cargo build` of the annotated crate | passes with default features, `--no-default-features`, `--features serde` and both; 0 warnings |
 | Upstream tests on the annotated crate | 47/47 integration, 38/38 doc, 2/2 serde (the same counts as upstream) |
-| Negative controls | 17/17 injected bugs rejected, including the pre-#102 `FromIterator` bug (issue #100) |
+| Negative controls | 22/22 injected bugs rejected, including the pre-#102 `FromIterator` bug (issue #100) |
 | Proof stability | same result with SMT seeds 0 to 19, 42 and 1234 |
 | Upstream finding | `get2_mut` panics when a key is past the last slot, where the docs promise `None` ([F1](#findings-in-the-crate)) |
 
@@ -60,9 +62,12 @@ which needs no precondition. Definitions and lemmas are in
 | `remove` | verified, precondition `spec_contains(key)` | `remove_post` |
 | `retain` | verified | requires `f` to be callable on every `(key, &mut T)`. Slot count is unchanged and vacant slots stay vacant. For every occupied key, `retain_step`: `f` was called on that key and value, and the slot afterwards is `Some(value as f left it)` if `f` returned `true`, `None` otherwise. Vacant list: removed keys in decreasing order, then the old list |
 | `Index::index` (`slab[key]`) | verified, precondition `spec_contains(key)` (vstd `index_req`) | `*value == slab@[key]` |
+| `IndexMut::index_mut` (`slab[key] = v`) | verified, precondition `spec_contains(key)` (vstd `index_req`) | `*value == slab@[key]`, and the final slab is the old one with `key` set to `*final(value)`. Keeps `wf()` and the vacant list |
+| `iter` | verified | the iterator's `remaining()` is `ref_pairs(occupied_pairs(slab@, 0))`: a `(key, &value)` pair for each occupied slot, in increasing key order |
+| `Iter`: `next`, `next_back`, `len`, `size_hint`, `clone` | verified | vstd's iterator laws: `next` and `next_back` return the first and the last remaining pair and remove it, then `None`. `len()` is the number of pairs left. `clone` returns an equal iterator. A type invariant says that `len` counts the pairs left |
 | `shrink_to_fit` | trusted 2-line shell over verified `remove_vacant_tail` | — |
 | `FromIterator::from_iter` | trusted shell over the verified `Builder` | — |
-| `capacity`, `reserve`, `reserve_exact`, `compact`, `iter`, `iter_mut`, `drain`, `get_disjoint_mut`, `get_unchecked`, `get_unchecked_mut`, `get2_unchecked_mut`, `key_of`, `IndexMut`, `Clone`, the three `IntoIterator` impls, the iterator types, `Debug`, `Display`, `Error`, serde | trusted | see [Trusted base](#trusted-base) |
+| `capacity`, `reserve`, `reserve_exact`, `compact`, `iter_mut`, `drain`, `get_disjoint_mut`, `get_unchecked`, `get_unchecked_mut`, `get2_unchecked_mut`, `key_of`, `Clone for Slab`, the three `IntoIterator` impls, `IntoIter`, `IterMut`, `Drain`, `Debug`, `Display`, `Error`, serde | trusted | see [Trusted base](#trusted-base) |
 | `GetDisjointMutError` | the type is verified; its derives are not given specs | — |
 
 ### Private items, also verified
@@ -70,6 +75,7 @@ which needs no precondition. Definitions and lemmas are in
 - `insert_at`: ensures `insert_post`.
 - `recreate_vacant_list`: requires only `len == num_occupied(slab@)`, which is the "self.len must be correct" in its doc comment. Ensures `wf()` and an unchanged `slab@`, with the vacant list in increasing key order.
 - `remove_vacant_tail`, the logic of `shrink_to_fit`: ensures `slab@ == trim_vacant_tail(old@)`. The vacant list is unchanged when nothing was trimmed (the case checked by upstream test `shrink_to_fit_doesnt_recreate_list_when_nothing_can_be_done`). Otherwise it is in increasing key order.
+- `iter_next`, `iter_next_back`: the bodies of `Iter::next` and `Iter::next_back`, on the iterator's fields (see [Executable code](#executable-code)).
 - `Builder::with_capacity`, `pair`, `build` (in `builder.rs`): `pair(key, value)` stores `value` at `key`, padding with vacant slots. `build` returns a `wf()` slab with the same slots. Its vacant list is in increasing key order if some pair filled a hole (the list was recreated) and in decreasing order otherwise.
 
 ### Intent decisions the contracts commit to
@@ -79,7 +85,8 @@ The docs leave these unstated. The contracts fix them to what the code does.
 1. **Key reuse is last-in, first-out.** `try_remove` pushes the key onto the vacant list and `insert` pops from it. The slab grows only when no slot is vacant.
 2. **`retain` visits keys in increasing order**, so removed keys are reused in decreasing order. The closure may change the values it keeps.
 3. **After `FromIterator`, reuse order depends on the input.** Vacant keys come in increasing order if a later pair filled an earlier hole, and in decreasing order otherwise. The upstream `from_iterator_*` tests depend on exactly this.
-4. **Panics become preconditions.** `remove` and `slab[key]` require an occupied key. `get2_mut` requires distinct keys that are both at most the number of slots. This is standard Verus practice: verified callers must prove that the call does not panic. Unverified callers still get the upstream panics.
+4. **Panics become preconditions.** `remove`, `slab[key]` and `slab[key] = v` require an occupied key. `get2_mut` requires distinct keys that are both at most the number of slots. This is standard Verus practice: verified callers must prove that the call does not panic. Unverified callers still get the upstream panics.
+5. **Iteration is in key order.** `iter` yields the occupied keys in increasing order from the front and in decreasing order from the back, and skips vacant slots.
 
 ## Trusted base
 
@@ -94,29 +101,30 @@ and code outside it is trusted. The trusted code is the reason column in this ta
 
 | id | Items | Upstream lines | Why it cannot be verified |
 |---|---|---|---|
-| T1 | `iter`, `iter_mut`, `drain`, the 3 `IntoIterator` impls, `IntoIter`/`Iter`/`IterMut`/`Drain` with their `Iterator`, `DoubleEndedIterator`, `ExactSizeIterator` and `FusedIterator` impls, `Clone for Iter` | 143 | built on `Enumerate`, `slice::IterMut`, `vec::Drain` and `next_back`, which vstd does not specify. The `verus!` macro rewrites every `for` loop, even in external items, so these must stay outside it |
+| T1 | `iter_mut`, `drain`, the 3 `IntoIterator` impls, `IntoIter`/`IterMut`/`Drain` with their `Iterator`, `DoubleEndedIterator`, `ExactSizeIterator` and `FusedIterator` impls | 105 | built on `Enumerate`, `slice::IterMut`, `vec::Drain` and `next_back`, which vstd does not specify (`IntoIter` is blocked for another reason, see [Newly verified](#newly-verified-with-verus-20261018)). The `IntoIterator` impls are trait methods, which cannot require `wf()`; the one for `&Slab` is a call to the verified `iter`. The `verus!` macro rewrites every `for` loop, even in external items, so these must stay outside it |
 | T2 | `get_disjoint_mut`, `get_unchecked`, `get_unchecked_mut`, `get2_unchecked_mut`, `key_of` | 62 | raw pointers, `MaybeUninit`, unchecked indexing, pointer-to-integer casts, `size_of` |
 | T3 | `compact` | 40 | a `Drop` guard that repairs the slab when the closure unwinds, `mem::forget` and `Vec::shrink_to_fit`. Its guard calls the verified `recreate_vacant_list` |
 | T4 | `Debug` (5 impls), `Display for GetDisjointMutError`, `std::error::Error` | 36 | formatting is not supported |
 | T5 | `capacity`, `reserve`, `reserve_exact` | 17 | `Vec::capacity` and `Vec::reserve_exact` are unspecified |
 | T6 | `Clone for Slab` (`clone`, `clone_from`) | 12 | `Vec::clone_from` is unspecified, and Verus verifies a trait impl all-or-nothing |
 | T7 | `FromIterator::from_iter` | 11 | iterates an arbitrary `IntoIterator` and calls `size_hint`. It drives the verified `Builder` |
-| T8 | `IndexMut::index_mut` | 6 | it must panic on a vacant key, but vstd's `IndexMut` specification admits no precondition and `panic!` is unsupported |
-| T9 | `shrink_to_fit` (the call to `Vec::shrink_to_fit`) | 1 | unspecified. The other 9 lines moved into the verified `remove_vacant_tail` |
-| T10 | `serde` module | 62 (file) | serde is not supported. Not compiled under Verus. It uses the verified `Builder` |
+| T8 | `shrink_to_fit` (the call to `Vec::shrink_to_fit`) | 1 | unspecified. The other 9 lines moved into the verified `remove_vacant_tail` |
+| T9 | `serde` module | 62 (file) | serde is not supported. Not compiled under Verus. It uses the verified `Builder` |
 
 **Obligations on the trusted code.** These hold by inspection, not by proof:
 
-- Trusted code that mutates a slab (`compact`, `drain`, `clone_from`, `reserve*`, `shrink_to_fit`, `index_mut`, `get_unchecked_mut`, `get2_unchecked_mut`, `get_disjoint_mut`, `IterMut`) must keep `wf()`. All of them except `compact` and `drain` change only values or capacity.
+- Trusted code that mutates a slab (`compact`, `drain`, `clone_from`, `reserve*`, `shrink_to_fit`, `get_unchecked_mut`, `get2_unchecked_mut`, `get_disjoint_mut`, `IterMut`) must keep `wf()`. All of them except `compact` and `drain` change only values or capacity.
 - Trusted callers must meet the preconditions of the verified functions they call:
   - `shrink_to_fit` calls `remove_vacant_tail`, which requires `wf()`.
+  - `IntoIterator for &Slab` and the alternate `Debug` format of `Slab` call `iter`, which requires `wf()`.
   - `compact`'s guard calls `recreate_vacant_list`, which requires `len == num_occupied`. `compact`'s normal path instead sets `next = len`, which is valid because every slot is occupied at that point.
   - `from_iter` and serde's `visit_map` call `Builder::with_capacity`, then `pair` repeatedly, then `build`. Each call's precondition is the previous call's postcondition.
-- The iterators' `len` counters and the `capacity() - len` arithmetic in `reserve*` are correct because of the verified invariant `len == num_occupied(slab@)`.
+- The `len` counters of `IntoIter`, `IterMut` and `Drain`, and the `capacity() - len` arithmetic in `reserve*`, are correct because of the verified invariant `len == num_occupied(slab@)`. (`Iter`'s counter is verified by its type invariant.)
 
 **Trusted outside the crate:**
 
-- vstd's specifications of the std items used: `Vec` (`new`, `with_capacity`, `len`, `push`, `pop`, `clear`, `as_mut_slice`, indexing, `IndexMut`, index assignment, and `Deref` to `get` and `last`), slices (`len`, `get`, `first_mut`, `split_at_mut`), `Option::expect` and `mem::swap`.
+- vstd's specifications of the std items used: `Vec` (`new`, `with_capacity`, `len`, `push`, `pop`, `clear`, `as_slice`, `as_mut_slice`, indexing, `IndexMut`, index assignment, and `Deref` to `get` and `last`), slices (`len`, `get`, indexing, `first_mut`, `split_first`, `split_at`, `split_at_mut`), `Option::expect` and `mem::swap`.
+- vstd's iterator specification: the `Iterator`, `DoubleEndedIterator` and `ExactSizeIterator` laws that `Iter` is verified against, and `VerusForLoopWrapper`, which verified `for` loops use.
 - vstd's `pervasive::unreached` and `pervasive::runtime_assert`, and vstd's `FnMut` call axioms.
 - Verus, Z3 and rustc.
 
@@ -150,10 +158,10 @@ than the capacity.
 
 ## Changes to the crate (audit of `upstream.diff`)
 
-- `lib.rs`: 57 lines removed, 609 added. Most additions are contracts, proof blocks, `verus!`
+- `lib.rs`: 82 lines removed, 834 added. Most additions are contracts, proof blocks, `verus!`
   block boundaries and `TRUSTED` comments.
-- `builder.rs`: 7 removed, 274 added.
-- New files: `spec.rs` (921 lines), `std_ext.rs` (57), `verified_examples.rs` (160).
+- `builder.rs`: 7 removed, 308 added.
+- New files: `spec.rs` (1057 lines), `std_ext.rs` (57), `verified_examples.rs` (270).
 - `serde.rs` and `tests/` are unchanged.
 
 ### Executable code
@@ -165,32 +173,36 @@ unchanged.
 |---|---|---|
 | `unreachable!()` → `vstd::pervasive::unreached()` (5×) | `insert_at`, `try_remove`, `VacantEntry::insert`, `Builder::build` (2×) | `panic!`-family macros are unsupported. `unreached` requires `false`, so each one is proved unreachable, and it still panics if reached |
 | `assert!(key1 != key2)` → `runtime_assert(key1 != key2)` | `get2_mut` | same reason. The panic message becomes `assertion failed: b` |
-| `match … _ => panic!("invalid key")` → `self.get(key).expect("invalid key")` | `Index::index` | same message and the same caller location (`expect` is `#[track_caller]`) |
-| `get_mut` on `Vec` and slices → `vec_get_mut` / `slice_get_mut` (7×) | `get_mut`, `get2_mut`, `try_remove`, `VacantEntry::insert` | `<[T]>::get_mut` is unspecified. The verified stand-ins in `std_ext.rs` use `IndexMut`, `split_at_mut` and `first_mut` |
+| `match … _ => panic!("invalid key")` → `.expect("invalid key")` on the looked-up value | `Index::index`, `IndexMut::index_mut` | same message and the same caller location (`expect` is `#[track_caller]`) |
+| `get_mut` on `Vec` and slices → `vec_get_mut` / `slice_get_mut` (8×) | `get_mut`, `get2_mut`, `try_remove`, `VacantEntry::insert`, `index_mut` | `<[T]>::get_mut` is unspecified. The verified stand-ins in `std_ext.rs` use `IndexMut`, `split_at_mut` and `first_mut` |
 | `core::mem::replace` → `mem_replace` | `try_remove` | unspecified. The stand-in is built on `mem::swap`. It may affect the copy elision that #160 aimed for, which I have not measured |
 | `val.into()` → `Some(val)` | `try_remove` | `From<T> for Option<T>` is unspecified. Identical code |
 | `self.entries.split_at_mut(k)` → `self.entries.as_mut_slice().split_at_mut(k)` | `get2_mut` | the implicit `Vec`-to-slice `DerefMut` coercion is unsupported |
-| reference patterns (`&Entry::X(..)`, `&mut Entry::X(ref mut v)`) → match ergonomics | `insert_at`, `get_mut`, `get2_mut`, `contains`, `VacantEntry::insert` | reference patterns are unsupported. Same bindings |
+| reference patterns (`&Entry::X(..)`, `&mut Entry::X(ref mut v)`) → match ergonomics | `insert_at`, `get_mut`, `get2_mut`, `contains`, `VacantEntry::insert`, `index_mut` | reference patterns are unsupported. Same bindings |
 | `while let Some(&Entry::Vacant(_)) = self.entries.last()` → `while matches!(self.entries.last(), Some(Entry::Vacant(_)))` | `shrink_to_fit` (now `remove_vacant_tail`) | `while let` is unsupported |
 | `for (i, entry) in self.entries.iter_mut().enumerate().rev()` → index `while` loop with the same order and the same early `break` | `recreate_vacant_list` | `for` works only over vstd-specified iterators |
 | `shrink_to_fit` split: everything before `self.entries.shrink_to_fit()` moved, unchanged, into the new verified `remove_vacant_tail` | `shrink_to_fit` | `Vec::shrink_to_fit` is unspecified |
 | `self.len += 1` moved after the `if`/`else` | `insert_at` | the branch does not read `len`. After `push`, Verus knows the new length fits in a `usize`, so it can prove that the increment cannot overflow. Without the move, `insert` would need a `len < usize::MAX` precondition (mutant M4). Also fixes F2 |
 | `let x = Struct { .. }; proof { .. } x` instead of a bare struct literal | `new`, `with_capacity`, `Builder::with_capacity` | names the value for the proof. Erases to the same code; `new` stays `const` |
 | `for i in 0..n` → `for i in iter: 0..n` | `retain` | Verus syntax that names the iterator for the invariant. Erased |
+| `Iter`'s field `entries: Enumerate<slice::Iter<Entry<T>>>` → `entries: &[Entry<T>]`, the entries not yet visited, and `front: usize`, the key of the first of them | `Iter`, `iter`, `Clone for Iter` | vstd specifies neither `Enumerate` nor `slice::Iter::next_back`. `next` takes an entry with `split_first` and `next_back` with `split_at`, which vstd specifies. The items and their order are the same, and `Debug` prints only `len`, so its output is unchanged. In a release-mode benchmark over 2 million slots, forward iteration took the same time, while `rev()` and a `for` loop took about 3–4% longer |
+| `Iter::next` and `Iter::next_back` bodies moved into `iter_next` and `iter_next_back`, which take the three fields by `&mut` | `Iter` | Verus checks a type invariant after every field assignment, so the fields are updated in one call and checked once after it, as in vstd's verified `IterMut` example. The loops are written with `loop`/`match` instead of `for` and `while let` |
+| `debug_assert_eq!(self.len, 0)` removed | `Iter::next`, `Iter::next_back` | panic macros are unsupported. The condition is proved at that point instead |
 
 ### Build-only changes
 
 - `Cargo.toml` gains a `vstd` dependency, which provides the `verus!` macro (it erases ghost code in
   normal builds), and `vstd/std` follows slab's `std` feature.
 - `rust-version` goes from 1.51 to 1.95, and `rust-toolchain.toml` pins 1.95.0.
-- The ghost-only `IndexSpecImpl` impl is `#[cfg(verus_keep_ghost)]`.
+- The ghost-only `IndexSpecImpl` impl, `Iter`'s iterator-spec impls and the `IteratorSpec` import are `#[cfg(verus_keep_ghost)]`.
 
 ### Ghost-only additions
 
-- `requires`/`ensures` on 28 functions.
-- Invariants on 4 loops.
-- 42 `proof` blocks.
-- 30 spec functions and 30 lemmas, in `spec.rs` and `builder.rs`.
+- `requires`/`ensures` on 33 functions.
+- Invariants on 6 loops.
+- 54 `proof` blocks.
+- 33 spec functions and 33 lemmas, in `spec.rs` and `builder.rs`.
+- A type invariant on `Iter`, and its `IteratorSpecImpl`, `DoubleEndedIteratorSpecImpl` and `ExactSizeIteratorSpecImpl` impls.
 - `verified_examples.rs`.
 
 ## Negative controls (all rejected)
@@ -218,6 +230,11 @@ Each mutant is one edit to a scratch copy, checked with the same command
 | M15 | `Builder::pair` does not mark the list broken when it fills a hole | assertion in `pair` |
 | M16 | `Builder::pair` inserts one hole too many | loop invariant |
 | M17 | the `mem_replace` stand-in returns the new value | postcondition of `mem_replace` |
+| M18 | `Iter::next` does not decrement `len` | postcondition of `iter_next` |
+| M19 | `Iter::next` does not advance the key | loop invariant of `iter_next` |
+| M20 | `Iter::next_back` yields the key one past the entry | postcondition of `iter_next_back` |
+| M21 | `iter` starts counting keys at 1 | postcondition of `iter` |
+| M22 | `index_mut` always returns the value at key 0 | postcondition of `index_mut` |
 
 M14 is the historical bug behind issue #100, fixed in 5bc6f62 (#102). Verus rejects the pre-fix
 logic.
@@ -234,6 +251,10 @@ contracts. A vacuous or too-weak spec would make these proofs fail.
 - **`try_remove` test.** Returns `Some(1)`, then `None`. `contains` is false afterwards.
 - **`retain` docs.** Given a closure with `ensures keep == (key == k1 || *old(val) == 1)`, the proof shows that `k1` and `k2` stay, `k3` goes, `len() == 2`, and the next `insert` returns `k3`.
 - **Upstream test `from_iterator_issue_100`, first case, through the `Builder`.** The next three `insert`s return 0, 2 and 3.
+- **`iter` docs.** `next` returns `(0, &0)`, `(1, &1)`, `(2, &2)`, then `None`.
+- **Upstream test `iter_rev`, with `next_back`.** After `remove(0)`, `len()` is 3, `next_back` returns `(3, &3)`, `(2, &2)` and `(1, &1)`, then `None`, and `len()` is 0.
+- **A `for` loop over `slab.iter()`.** For any `wf()` slab, each `(key, value)` the loop sees has `slab@[key] == Some(*value)`, and the loop body runs `slab.len()` times.
+- **`slab[key] = 2`.** Afterwards `slab[key] == 2`, and the slab is still `wf()`: the next `insert` returns 1.
 
 ## Porting to Verus 0.2026.10.18
 
@@ -253,8 +274,42 @@ Verus 0.2026.10.18.7d82994 (rustc 1.99.1) needed two proof-only changes. No exec
     `lemma_vacant_keys_from` were scoped the same way.
   - Moving the proof into the lemma without scoping the calls still left 5 of 14 seeds failing,
     in the new lemma or in `pair`. With the calls scoped, all 22 seeds checked pass.
-- **Negative controls.** All 17 are still rejected. M7 is now rejected by an rlimit in the
-  `recreate_vacant_list` loop rather than by the assertion before the `break`.
+- **Negative controls.** All 17 were still rejected. M7 was then rejected by an rlimit in the
+  `recreate_vacant_list` loop rather than by the assertion before the `break`; after the changes
+  in the next section, it is rejected by that assertion again.
+
+## Newly verified with Verus 0.2026.10.18
+
+The new vstd specifies more of std. On 2026-10-26 this made three trusted items verifiable:
+
+- **`IndexMut`.** vstd's `index_mut` now has the same precondition as `index`
+  (`index_req`), so `slab[key] = v` can require an occupied key instead of panicking.
+- **`iter` and `Iter` (previously in T1).** vstd now has an iterator specification: an iterator provides
+  a prophetic `remaining()` sequence, and `next` and `next_back` must remove and return its first
+  and last item. `Iter`'s `remaining()` is the `(key, &value)` pairs of the occupied slots it has
+  not yet yielded, and a type invariant says that `len` counts them. Verified clients can use
+  `slab.iter()` in `for` loops.
+- **`Clone for Iter`**, which copies the fields.
+
+Still trusted, and why:
+
+- **`IntoIter`.** I verified it too, then reverted it. Its fields must be updated through one
+  helper call (the type invariant is checked after every field assignment), and Verus requires
+  such a helper to be `no_unwind`. vstd does not mark `Iterator::next` as `no_unwind`, so the
+  helper cannot call `vec::IntoIter::next`. Adding `no_unwind` to those specs in vstd would
+  unblock it. The workaround, swapping the whole iterator out on every `next`, would cost speed.
+- **`IterMut`.** Its items are `&mut T`, so `remaining()` must predict references that do not
+  exist yet. vstd's own verified `slice::IterMut` example needs custom prophecy machinery
+  (`ProphecyGhostConstrainedSeq`) for this.
+- **The `IntoIterator` impls for `Slab` and `&Slab`.** A trait method cannot have a precondition,
+  and the iterators' invariants need `wf()`.
+- **`get_unchecked`, `get_unchecked_mut`, `capacity`, `reserve`, `reserve_exact`,
+  `shrink_to_fit`, `clone_from` and `drain`.** vstd still does not specify
+  `<[T]>::get_unchecked`, `Vec::capacity`, `Vec::reserve_exact`, `Vec::shrink_to_fit`,
+  `Vec::clone_from` or `vec::Drain`.
+
+vstd now also specifies `<[T]>::get_mut`, so the `vec_get_mut` and `slice_get_mut` stand-ins could
+be replaced by upstream's calls. That is not done here.
 
 ## Verus notes from this pass
 
@@ -270,8 +325,18 @@ Verus 0.2026.10.18.7d82994 (rustc 1.99.1) needed two proof-only changes. No exec
   loops over unspecified iterators therefore has to live outside `verus!`. I put all trusted code
   outside, which also makes the boundary easy to audit.
 - **Trait impls are all-or-nothing.** One method of a trait impl cannot be external, which is why
-  `clone` goes along with `clone_from`. vstd's `IndexMut` declares no method, so `index_mut`
-  cannot carry a precondition.
+  `clone` goes along with `clone_from`. (In 0.2026.05.03, vstd's `IndexMut` declared no method, so
+  `index_mut` could not carry a precondition. The new vstd gives it `index_req`.)
+- **Trait methods cannot have preconditions.** So a trait impl cannot require `wf()`, and the
+  `IntoIterator` impls stay trusted. A type invariant would be the alternative, but putting one on
+  `Slab` would mean restructuring every method that updates its fields.
+- **Type invariants.** Verus checks a `#[verifier::type_invariant]` after every assignment to a
+  field. Updates that break it temporarily go through one call that borrows all the fields, and
+  that call must be `no_unwind`. This is what blocks `IntoIter` (see above).
+- **Iterator-spec traits.** Inside an `impl IteratorSpecImpl` block, `x.remaining()` is ambiguous
+  between `IteratorSpec` and `IteratorSpecImpl`, so the crate imports only `IteratorSpec` and
+  names the `*SpecImpl` traits by path. Method calls on `final(x)` need an explicit dereference:
+  `(*final(x)).remaining()`.
 - **Matching loop.** A chain quantifier triggered on `list[i]` whose body mentions `list[i + 1]`
   made three functions hit the rlimit. Triggering it on `entries[list[i]]` instead cut the whole
   run from timeouts to 1.9 s.
@@ -292,7 +357,7 @@ Verus 0.2026.10.18.7d82994 (rustc 1.99.1) needed two proof-only changes. No exec
 - **Other limitations hit.**
   - `when_used_as_spec` needs the spec function in the same impl block.
   - `while let`, reference patterns and the `Vec`-to-slice `DerefMut` coercion are unsupported.
-  - `<[T]>::get_mut`, `mem::replace`, `From<T> for Option<T>`, `Vec::{capacity, reserve_exact, shrink_to_fit, clone_from, drain, iter_mut}` and `Iterator::size_hint` are unspecified.
+  - `mem::replace`, `From<T> for Option<T>`, `Vec::{capacity, reserve_exact, shrink_to_fit, clone_from, drain}`, `<[T]>::get_unchecked`, `Enumerate`, the `next_back` of `slice::Iter` and `slice::IterMut`, and `Iterator::size_hint` are unspecified. (`<[T]>::get_mut` and `iter_mut` were unspecified in 0.2026.05.03 and are specified now.)
   - Derived `Clone` impls get no spec (warning only).
 - **`cargo verus` is still unusable with this release.** It panics compiling the crates.io vstd
   (`unexpected verus diagnostic item … shr_ref_struct_wrap`). The bare binary works.

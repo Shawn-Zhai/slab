@@ -18,8 +18,8 @@ Results, contracts, the trusted base and the audited list of code changes are in
 Verus 0.2026.10.18.7d82994 (bare `verus` binary with its bundled vstd; with 0.2026.05.03, `cargo verus`
 panicked while compiling the crates.io vstd, and this has not been rechecked). Run from this directory:
 
-    verus --crate-type=lib --no-cheating --cfg 'feature="std"' src/lib.rs   # 74 verified, 0 errors
-    verus --crate-type=lib --no-cheating src/lib.rs                          # no_std: 74 verified, 0 errors
+    verus --crate-type=lib --no-cheating --cfg 'feature="std"' src/lib.rs   # 94 verified, 0 errors
+    verus --crate-type=lib --no-cheating src/lib.rs                          # no_std: 94 verified, 0 errors
 
 Normal build and the upstream tests (ghost code erased; toolchain pinned to 1.95.0 by `rust-toolchain.toml`):
 

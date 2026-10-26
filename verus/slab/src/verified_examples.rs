@@ -9,6 +9,7 @@ use crate::builder::Builder;
 use crate::spec::*;
 use crate::Slab;
 use vstd::prelude::*;
+use vstd::std_specs::iter::IteratorSpec;
 
 verus! {
 
@@ -155,6 +156,115 @@ fn example_issue_100() {
     let b = slab.insert(30);
     let c = slab.insert(40);
     assert(a == 0 && b == 2 && c == 3);
+}
+
+/// `Slab::iter` docs: the values in key order, then `None`.
+fn example_iter() {
+    let mut slab: Slab<u64> = Slab::new();
+    slab.insert(0);
+    slab.insert(1);
+    slab.insert(2);
+
+    let mut iterator = slab.iter();
+    proof {
+        let slots = seq![Some(0u64), Some(1u64), Some(2u64)];
+        assert(slab@ =~= slots);
+        reveal_with_fuel(occupied_pairs, 4);
+        assert(slots.drop_last().drop_last().drop_last() =~= Seq::<Option<u64>>::empty());
+        assert(slots.drop_last().drop_last() =~= seq![Some(0u64)]);
+        assert(slots.drop_last() =~= seq![Some(0u64), Some(1u64)]);
+        assert(occupied_pairs(slots, 0) =~= seq![(0usize, 0u64), (1usize, 1u64), (2usize, 2u64)]);
+    }
+    let a = iterator.next();
+    let b = iterator.next();
+    let c = iterator.next();
+    let d = iterator.next();
+    assert(a == Some((0usize, &0u64)));
+    assert(b == Some((1usize, &1u64)));
+    assert(c == Some((2usize, &2u64)));
+    assert(d is None);
+}
+
+/// Upstream test `iter_rev`, with `next_back` in place of `rev().collect()`: a removed key is
+/// skipped from either end, and `len` counts what is left.
+fn example_iter_rev() {
+    let mut slab: Slab<u64> = Slab::new();
+    slab.insert(0);
+    slab.insert(1);
+    slab.insert(2);
+    slab.insert(3);
+    slab.remove(0);
+
+    let mut it = slab.iter();
+    proof {
+        let slots = seq![None, Some(1u64), Some(2u64), Some(3u64)];
+        assert(slab@ =~= slots);
+        reveal_with_fuel(occupied_pairs, 5);
+        assert(slots.drop_last().drop_last().drop_last().drop_last() =~= Seq::<Option<u64>>::empty());
+        assert(slots.drop_last().drop_last().drop_last() =~= seq![None::<u64>]);
+        assert(slots.drop_last().drop_last() =~= seq![None, Some(1u64)]);
+        assert(slots.drop_last() =~= seq![None, Some(1u64), Some(2u64)]);
+        assert(occupied_pairs(slots, 0) =~= seq![(1usize, 1u64), (2usize, 2u64), (3usize, 3u64)]);
+    }
+    let n = it.len();
+    assert(n == 3);
+    let a = it.next_back();
+    let b = it.next_back();
+    let c = it.next_back();
+    let d = it.next_back();
+    assert(a == Some((3usize, &3u64)));
+    assert(b == Some((2usize, &2u64)));
+    assert(c == Some((1usize, &1u64)));
+    assert(d is None);
+    let n = it.len();
+    assert(n == 0);
+}
+
+/// A `for` loop over `slab.iter()` sees each stored value under its key, and sees `slab.len()`
+/// of them.
+fn example_iter_for(slab: &Slab<u64>)
+    requires
+        slab.wf(),
+{
+    proof {
+        slab.lemma_len_bound();
+        lemma_num_occupied_le(slab@);
+        lemma_occupied_pairs(slab@, 0);
+    }
+    let mut count: usize = 0;
+    for (key, value) in it: slab.iter()
+        invariant
+            slab.wf(),
+            it.seq() == ref_pairs(occupied_pairs(slab@, 0)),
+            occupied_pairs(slab@, 0).len() <= usize::MAX,
+            count == it.index(),
+            forall|i: int|
+                #![trigger occupied_pairs(slab@, 0)[i]]
+                0 <= i < occupied_pairs(slab@, 0).len() ==> {
+                    &&& occupied_pairs(slab@, 0)[i].0 < slab@.len()
+                    &&& slab@[occupied_pairs(slab@, 0)[i].0 as int] == Some(
+                        occupied_pairs(slab@, 0)[i].1,
+                    )
+                },
+    {
+        assert(slab@[key as int] == Some(*value));
+        count += 1;
+    }
+    let len = slab.len();
+    assert(count == len);
+}
+
+/// `slab[key] = value` stores the value, and the slab stays usable.
+fn example_index_mut() {
+    let mut slab: Slab<u64> = Slab::new();
+    let key = slab.insert(1);
+
+    slab[key] = 2;
+    let v = slab[key];
+    assert(v == 2);
+
+    let next = slab.insert(3);
+    assert(next == 1);
 }
 
 } // verus!

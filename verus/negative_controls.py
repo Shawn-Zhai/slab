@@ -64,6 +64,21 @@ MUTANTS = [
     ("M17", "mem_replace stand-in returns the new value", "src/std_ext.rs",
      "    core::mem::swap(dest, &mut src);\n    src",
      "    core::mem::swap(dest, &mut src);\n    core::mem::swap(dest, &mut src);\n    src"),
+    ("M18", "Iter::next does not decrement len", "src/lib.rs",
+     "                if let Entry::Occupied(ref v) = *entry {\n                    *len -= 1;\n",
+     "                if let Entry::Occupied(ref v) = *entry {\n"),
+    ("M19", "Iter::next does not advance the key", "src/lib.rs",
+     "                *front += 1;\n",
+     ""),
+    ("M20", "Iter::next_back yields the key one past the entry", "src/lib.rs",
+     "        let key = front + (n - 1);",
+     "        let key = front + n;"),
+    ("M21", "iter() starts counting keys at 1", "src/lib.rs",
+     "            front: 0,\n",
+     "            front: 1,\n"),
+    ("M22", "index_mut always returns the value at key 0", "src/lib.rs",
+     "let value = match vec_get_mut(&mut self.entries, key) {",
+     "let value = match vec_get_mut(&mut self.entries, 0) {"),
 ]
 
 def run(mid, desc, path, old, new, extra=None):
