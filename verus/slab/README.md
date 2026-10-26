@@ -19,6 +19,8 @@ Scripts in `../`:
 - `detect_changes.py`: every change to executable code, against human approvals in
   `approved_changes.json`; writes `changes_report.md`.
 - `test_detect_changes.py`: injected edits that `detect_changes.py` must flag or ignore.
+- `compare_specs.py`: compares the human-written gold spec (`humen_written_spec.rs`) with the
+  verified spec, with proofs in `spec_proofs.rs`; writes `spec_comparison.md`.
 
 ## Reproduce
 

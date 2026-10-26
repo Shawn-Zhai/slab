@@ -23,6 +23,7 @@ Specifications for `iter`, `Iter` and `IndexMut` were added on 2026-10-26 (see
 | Negative controls | 22/22 injected bugs rejected, including the pre-#102 `FromIterator` bug (issue #100) |
 | Proof stability | same result with SMT seeds 0 to 19, 42 and 1234 |
 | Change detection | `detect_changes.py` finds 22 changed and 9 added items of executable code, plus 10 lines that mark code trusted or ghost-only ([Change detection](#change-detection)) |
+| Gold spec comparison | `compare_specs.py` compares Shawn's human-written spec with the verified one for the 20 functions both cover. The verified spec implies the gold one for 9, for 10 more except for capacity, and not for `retain` (the closure's precondition). Every remaining failure is a real difference between the specs and is explained in the report ([Comparison with the gold spec](#comparison-with-the-gold-spec)) |
 | Upstream finding | `get2_mut` panics when a key is past the last slot, where the docs promise `None` ([F1](#findings-in-the-crate)) |
 
 ## The specification
@@ -285,6 +286,87 @@ cases pass:
   `--no-default-features`.
 - **The `verus!` macro is trusted** to erase only ghost code, as Verus itself trusts it.
 
+## Comparison with the gold spec
+
+[`humen_written_spec.rs`](humen_written_spec.rs) is a human-written gold spec of the public
+functions. [`compare_specs.py`](compare_specs.py) compares it with the verified spec, the script builds the equivalence obligations, Verus checks them,
+and proofs come from a separate file.
+
+**Directions.**
+- **Claude ⇒ gold.** A wrapper with the gold contract calls the verified function. Verus then
+  checks that the gold precondition implies Claude's, and that the gold precondition plus
+  Claude's postcondition imply the gold postcondition. This is contract refinement, and it handles
+  `&mut` returns, `final(..)`, closures and trait methods through the real call.
+- **Gold ⇒ Claude.** A wrapper with Claude's contract calls a stand-in that has the gold contract.
+  Inherent functions only.
+
+**Conventions applied to the gold spec**, all listed in the report:
+- the gold `View` becomes a `GoldView` trait, since the crate has its own `View` for `Slab`;
+- `x@.valid()` on a slab is read as the gold invariant `slab_rep_ok`;
+- the gold `broadcast axiom` (`len <= capacity`) is in force;
+- gold definitions about types the crate leaves trusted are dropped.
+
+A model equality `x@ == y` is checked field by field. This has the same meaning, but Verus then
+applies extensional equality to each field, so a failing clause is a real difference rather than
+an automation gap. An obligation with capacity clauses or model equalities is also checked
+without capacity. If only that variant holds, the report says "capacity only": Claude's spec says
+nothing about capacity.
+
+**Proofs** go in [`spec_proofs.rs`](spec_proofs.rs). That file holds lemmas, plus `proof { }`
+hints marked `// @hint <obligation> before|after`, where `*` means every obligation. The
+obligations are regenerated from the two spec files on every run, so proofs cannot change what
+is checked. `assume`, `admit`, `external_body` and axioms are rejected in that file. If any lemma
+fails to verify, the run is refused (exit 2), so no result can rest on a failing lemma.
+
+**Notes.** A `// @note <obligation>` comment in `spec_proofs.rs` explains why an obligation stays
+unproved. The report shows the note next to the failure and counts failures that are neither
+capacity only nor explained by a note. Notes are not checked; they are there for the human
+review.
+
+**The proofs** (Claude, 2026-10-26; about 500 non-comment lines, made up of 22 lemmas and helper spec
+functions and 9 hints):
+- `lemma_wf_gold` and `lemma_gold_wf` prove that Claude's invariant `wf()` and the gold
+  `slab_rep_ok` are equivalent. They also show that the two models agree: the gold slots are
+  Claude's view, the gold free list (`follow_free_links`) is `vacant_list()`, and the occupied
+  counts are equal. `lemma_bridge_all` states both directions for every slab, so they also apply
+  to the final value of a slab behind a returned `&mut`. A `*` hint brings them into every
+  obligation.
+- Per-function lemmas translate insertion, removal and `retain` between the models. For `retain`
+  in the Claude ⇒ gold direction, the gold callback events are read off the final slab. The
+  ascending removed keys (`filter`, then `reverse`) are shown to equal Claude's descending
+  `removed_keys_desc`.
+
+**Current result** ([`spec_comparison.md`](spec_comparison.md)):
+- **Comparable:** 20 functions. The other 36 are trusted in the verified crate, or use gold
+  placeholders such as the `Iter` view.
+- **Claude ⇒ gold:** 9 proved (`len`, `is_empty`, `contains`, `get`, `vacant_key`,
+  `vacant_entry`, `Index::index`, `VacantEntry::key`, `VacantEntry::insert`).
+  10 capacity only (`new`, `with_capacity`, `insert`, `try_remove`, `remove`, `clear`, `get_mut`,
+  `get2_mut`, `IndexMut::index_mut`, `Default::default`).
+  1 unproved: `retain`. Claude requires the closure's precondition for every argument
+  (`f.requires((key, value))`), which Verus needs in order to call the closure. A closure with
+  no `requires` clause meets it trivially. Every postcondition is proved.
+- **Gold ⇒ Claude** (17 inherent functions): 8 proved (`with_capacity`, `len`, `is_empty`,
+  `vacant_key`, `insert`, `try_remove`, `remove`, `VacantEntry::key`). The other 9 are real
+  differences:
+  - *Claude's contract is more general:* `contains`, `get` and `clear` have no precondition,
+    while the gold contracts require `valid()`.
+  - *The gold contract leaves something out:*
+    - `new`, `get_mut` and `get2_mut` do not promise that the result is `valid()`, although
+      `with_capacity` and the removals do. The view does not fix the `len` field. With the clause
+      added (checked on a scratch copy of the gold spec), all three obligations are proved.
+    - `vacant_entry` does not tie the entry to the slab it borrows.
+    - `VacantEntry::insert` does not describe the insertion; its comment says so.
+    - In `retain`, the events are not tied to the closure; its comment says so. The vacant-list
+      clause of Claude's contract is proved; only `retain_step`, the link to `f.ensures`, is not.
+
+**Self-check.** Negating `contains`' gold postcondition, and corrupting `get`'s and
+`VacantEntry::key`'s, turns all three from proved to unproved. Each failure names the clause.
+Eight further mutations of proved gold clauses were all caught. These included a wrong `insert`
+key, a `removed` that keeps the free list, a `retained` without the `reverse`, and dropped return
+values. Five were reported as unproved obligations. In the other three, the mutated gold
+definition broke a linking lemma, so the run was refused. None was reported as proved.
+
 ## Negative controls (all rejected)
 
 Each mutant is one edit to a scratch copy, checked with the same command
@@ -447,4 +529,5 @@ be replaced by upstream's calls. That is not done here.
 See [`slab/README.md`](slab/README.md):
 `verus --crate-type=lib --no-cheating --cfg 'feature="std"' src/lib.rs` from `verus/slab/`, and
 `cargo test --features serde` for the upstream tests. From `verus/`: `python3 negative_controls.py`,
-`python3 check_trusted.py`, `python3 detect_changes.py` and `python3 test_detect_changes.py`.
+`python3 check_trusted.py`, `python3 detect_changes.py`, `python3 test_detect_changes.py` and
+`python3 compare_specs.py`.
