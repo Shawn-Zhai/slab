@@ -1,0 +1,868 @@
+# Hand edits in verus_fixed/ relative to verus/ (2026-11-04). Generated files (upstream.diff, changes_report.md,
+# spec_comparison.md) and the review itself (SPEC_REVIEW.md) are left out; regenerate them with the scripts.
+
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/VERIFICATION.md verus_fixed/VERIFICATION.md
+--- verus/VERIFICATION.md	2026-10-26 03:55:08.987846569 -0400
++++ verus_fixed/VERIFICATION.md	2026-11-04 00:04:21.497631510 -0500
+@@ -8,22 +8,26 @@
+ the crate's documentation, its tests and the code. No human-written spec existed.
+ Specifications for `iter`, `Iter` and `IndexMut` were added on 2026-10-26 (see
+ [Newly verified with Verus 0.2026.10.18](#newly-verified-with-verus-20261018)).
++On 2026-11-04 the specs were reviewed against Shawn's human-written spec, and three contracts were
++amended: `Iter::size_hint` got a postcondition, and `retain` got a weaker closure precondition and
++an occupied-count postcondition. No executable code changed. The review, including the
++human-spec findings, is in [`SPEC_REVIEW.md`](SPEC_REVIEW.md).
+ 
+ ## Headline
+ 
+ | | |
+ |---|---|
+-| Verus `--no-cheating`, default features (`std`) | **94 verified, 0 errors**, 4.1 s wall clock (5.1 s SMT, 5 threads) |
+-| Verus `--no-cheating`, no features (`no_std`) | 94 verified, 0 errors |
++| Verus `--no-cheating`, default features (`std`) | **98 verified, 0 errors**, 3.6 s wall clock (4.7 s SMT, 5 threads) |
++| Verus `--no-cheating`, no features (`no_std`) | 98 verified, 0 errors |
+ | `assume`, `admit`, `external_body`, `assume_specification`, axioms, `uninterp` in the crate | **none** (`--no-cheating` rejects them) |
+-| Verified | 28 upstream functions of `Slab`/`VacantEntry`/`Iter`, the logic of `shrink_to_fit`, and the 3 functions of `Builder` (253 non-comment lines of upstream code), plus 3 std stand-ins, 33 lemmas and 11 example clients |
++| Verified | 28 upstream functions of `Slab`/`VacantEntry`/`Iter`, the logic of `shrink_to_fit`, and the 3 functions of `Builder` (253 non-comment lines of upstream code), plus 3 std stand-ins, 34 lemmas and 14 example clients |
+ | Trusted, not verified | everything in [`trusted.rs`](slab/src/trusted.rs): 35 upstream functions (283 lines), plus the serde module, listed in [Trusted base](#trusted-base) |
+ | Normal `cargo build` of the annotated crate | passes with default features, `--no-default-features`, `--features serde` and both; 0 warnings |
+ | Upstream tests on the annotated crate | 47/47 integration, 38/38 doc, 2/2 serde (the same counts as upstream) |
+-| Negative controls | 22/22 injected bugs rejected, including the pre-#102 `FromIterator` bug (issue #100) |
++| Negative controls | 23/23 injected bugs rejected, including the pre-#102 `FromIterator` bug (issue #100) |
+ | Proof stability | same result with SMT seeds 0 to 19, 42 and 1234 |
+ | Change detection | `detect_changes.py` finds 22 changed and 9 added items of executable code, plus 10 lines that mark code trusted or ghost-only ([Change detection](#change-detection)) |
+-| Gold spec comparison | `compare_specs.py` compares Shawn's human-written spec with the verified one for the 20 functions both cover. The verified spec implies the gold one for 9, for 10 more except for capacity, and not for `retain` (the closure's precondition). Every remaining failure is a real difference between the specs and is explained in the report ([Comparison with the gold spec](#comparison-with-the-gold-spec)) |
++| Gold spec comparison | `compare_specs.py` compares Shawn's human-written spec with the verified one for the 26 functions both cover: 20, plus `iter` and 5 `Iter` methods once the gold `Iter` placeholder is read in terms of the crate. The verified spec implies the gold one for 15, and for 10 more except for capacity. It fails only for `retain`, whose closure precondition Verus needs. Every remaining failure is a real difference between the specs and is explained in the report ([Comparison with the gold spec](#comparison-with-the-gold-spec)) |
+ | Upstream finding | `get2_mut` panics when a key is past the last slot, where the docs promise `None` ([F1](#findings-in-the-crate)) |
+ 
+ ## The specification
+@@ -62,11 +66,11 @@
+ | `VacantEntry::key`, `VacantEntry::insert` | verified | `insert_post(slab, final_slab, key, *final(value))`: the slab ends up holding whatever the caller leaves behind the returned `&mut T` |
+ | `try_remove` | verified | on `Some(v)`, `remove_post`: `key` held `v`, its slot becomes `None`, and `key` becomes the head of the vacant list. On `None`, the key is not occupied and nothing changes |
+ | `remove` | verified, precondition `spec_contains(key)` | `remove_post` |
+-| `retain` | verified | requires `f` to be callable on every `(key, &mut T)`. Slot count is unchanged and vacant slots stay vacant. For every occupied key, `retain_step`: `f` was called on that key and value, and the slot afterwards is `Some(value as f left it)` if `f` returned `true`, `None` otherwise. Vacant list: removed keys in decreasing order, then the old list |
++| `retain` | verified | requires `f` to be callable on each occupied key with a reference to the value stored there: the arguments `retain` passes it. Slot count is unchanged, the number of values does not grow (`num_occupied`), and vacant slots stay vacant. For every occupied key, `retain_step`: `f` was called on that key and value, and the slot afterwards is `Some(value as f left it)` if `f` returned `true`, `None` otherwise. Vacant list: removed keys in decreasing order, then the old list |
+ | `Index::index` (`slab[key]`) | verified, precondition `spec_contains(key)` (vstd `index_req`) | `*value == slab@[key]` |
+ | `IndexMut::index_mut` (`slab[key] = v`) | verified, precondition `spec_contains(key)` (vstd `index_req`) | `*value == slab@[key]`, and the final slab is the old one with `key` set to `*final(value)`. Keeps `wf()` and the vacant list |
+ | `iter` | verified | the iterator's `remaining()` is `ref_pairs(occupied_pairs(slab@, 0))`: a `(key, &value)` pair for each occupied slot, in increasing key order |
+-| `Iter`: `next`, `next_back`, `len`, `size_hint`, `clone` | verified | vstd's iterator laws: `next` and `next_back` return the first and the last remaining pair and remove it, then `None`. `len()` is the number of pairs left. `clone` returns an equal iterator. A type invariant says that `len` counts the pairs left |
++| `Iter`: `next`, `next_back`, `len`, `size_hint`, `clone` | verified | vstd's iterator laws: `next` and `next_back` return the first and the last remaining pair and remove it, then `None`. `len()` is the number of pairs left. vstd does not specify `size_hint`, so its contract is the crate's own: `(n, Some(n))` for the `n` pairs left. `clone` returns an equal iterator. A type invariant says that `len` counts the pairs left |
+ | `shrink_to_fit` | trusted 2-line shell over verified `remove_vacant_tail` | — |
+ | `FromIterator::from_iter` | trusted shell over the verified `Builder` | — |
+ | `capacity`, `reserve`, `reserve_exact`, `compact`, `iter_mut`, `drain`, `get_disjoint_mut`, `get_unchecked`, `get_unchecked_mut`, `get2_unchecked_mut`, `key_of`, `Clone for Slab`, the three `IntoIterator` impls, `IntoIter`, `IterMut`, `Drain`, `Debug`, `Display`, `Error`, serde | trusted | see [Trusted base](#trusted-base) |
+@@ -207,10 +211,10 @@
+ 
+ ### Ghost-only additions
+ 
+-- `requires`/`ensures` on 33 functions.
++- `requires`/`ensures` on 34 functions.
+ - Invariants on 6 loops.
+-- 54 `proof` blocks.
+-- 33 spec functions and 33 lemmas, in `spec.rs` and `builder.rs`.
++- 56 `proof` blocks.
++- 33 spec functions and 34 lemmas, in `spec.rs` and `builder.rs`.
+ - A type invariant on `Iter`, and its `IteratorSpecImpl`, `DoubleEndedIteratorSpecImpl` and `ExactSizeIteratorSpecImpl` impls.
+ - `verified_examples.rs`.
+ 
+@@ -288,9 +292,11 @@
+ 
+ ## Comparison with the gold spec
+ 
+-[`humen_written_spec.rs`](humen_written_spec.rs) is a human-written gold spec of the public
++[`human_written_spec.rs`](human_written_spec.rs) is a human-written gold spec of the public
+ functions. [`compare_specs.py`](compare_specs.py) compares it with the verified spec, the script builds the equivalence obligations, Verus checks them,
+-and proofs come from a separate file.
++and proofs come from a separate file. (The file was renamed from `humen_written_spec.rs`. The
++script's default path still used the old name, so it failed when run without `--gold`. This
++copy fixes the default.)
+ 
+ **Directions.**
+ - **Claude ⇒ gold.** A wrapper with the gold contract calls the verified function. Verus then
+@@ -304,7 +310,14 @@
+ - the gold `View` becomes a `GoldView` trait, since the crate has its own `View` for `Slab`;
+ - `x@.valid()` on a slab is read as the gold invariant `slab_rep_ok`;
+ - the gold `broadcast axiom` (`len <= capacity`) is in force;
+-- gold definitions about types the crate leaves trusted are dropped.
++- gold definitions about types the crate leaves trusted are dropped;
++- a gold `uninterp` placeholder named by `// @interpret <name>` in `spec_proofs.rs` is replaced by
++  the `spec fn` defined there. This is used once: the gold `Iter` model `iter_remaining` is read
++  as Claude's `remaining()` pairs, with keys as `int` and values dereferenced. Before, every
++  contract that used the `Iter` view was skipped as a placeholder. The definition is a modeling
++  choice, not a checked fact, so the report prints it. As a self-check, corrupting three gold
++  iterator clauses (`next` returns the second pair, `size_hint` is off by one, `iter` yields the
++  pairs reversed) turns all three from proved to unproved.
+ 
+ A model equality `x@ == y` is checked field by field. This has the same meaning, but Verus then
+ applies extensional equality to each field, so a failing clause is a real difference rather than
+@@ -323,8 +336,8 @@
+ capacity only nor explained by a note. Notes are not checked; they are there for the human
+ review.
+ 
+-**The proofs** (Claude, 2026-10-26; about 500 non-comment lines, made up of 22 lemmas and helper spec
+-functions and 9 hints):
++**The proofs** (Claude, 2026-10-26, extended 2026-11-04; about 560 non-comment lines, made up of
++27 lemmas and helper spec functions and 11 hints):
+ - `lemma_wf_gold` and `lemma_gold_wf` prove that Claude's invariant `wf()` and the gold
+   `slab_rep_ok` are equivalent. They also show that the two models agree: the gold slots are
+   Claude's view, the gold free list (`follow_free_links`) is `vacant_list()`, and the occupied
+@@ -334,20 +347,27 @@
+ - Per-function lemmas translate insertion, removal and `retain` between the models. For `retain`
+   in the Claude ⇒ gold direction, the gold callback events are read off the final slab. The
+   ascending removed keys (`filter`, then `reverse`) are shown to equal Claude's descending
+-  `removed_keys_desc`.
++  `removed_keys_desc`. The gold occupied-count clause of `retain` needs no lemma: Claude's
++  contract states it (until 2026-11-04 it took an induction here).
++- `lemma_iter_pairs` and `lemma_gold_pairs` show that Claude's `occupied_pairs` (recursive from
++  the back) are the gold `pairs()` (`filter`, then `map`) with `int` keys. Two lemmas convert
++  between `remaining()` and the interpreted gold `Iter` model.
+ 
+ **Current result** ([`spec_comparison.md`](spec_comparison.md)):
+-- **Comparable:** 20 functions. The other 36 are trusted in the verified crate, or use gold
+-  placeholders such as the `Iter` view.
+-- **Claude ⇒ gold:** 9 proved (`len`, `is_empty`, `contains`, `get`, `vacant_key`,
+-  `vacant_entry`, `Index::index`, `VacantEntry::key`, `VacantEntry::insert`).
++- **Comparable:** 26 functions. The other 30 are trusted in the verified crate.
++- **Claude ⇒ gold:** 15 proved (`len`, `is_empty`, `contains`, `get`, `vacant_key`,
++  `vacant_entry`, `iter`, `Index::index`, `VacantEntry::key`, `VacantEntry::insert`, and
++  `Iter`'s `next`, `size_hint`, `next_back`, `len` and `clone`).
+   10 capacity only (`new`, `with_capacity`, `insert`, `try_remove`, `remove`, `clear`, `get_mut`,
+   `get2_mut`, `IndexMut::index_mut`, `Default::default`).
+-  1 unproved: `retain`. Claude requires the closure's precondition for every argument
+-  (`f.requires((key, value))`), which Verus needs in order to call the closure. A closure with
+-  no `requires` clause meets it trivially. Every postcondition is proved.
+-- **Gold ⇒ Claude** (17 inherent functions): 8 proved (`with_capacity`, `len`, `is_empty`,
+-  `vacant_key`, `insert`, `try_remove`, `remove`, `VacantEntry::key`). The other 9 are real
++  1 unproved: `retain`. Claude requires `f.requires((key, value))` for the arguments `retain`
++  passes: each occupied key with a reference to its value. Verus needs this in order to call the
++  closure, and no weaker condition will do. A closure with no `requires` clause meets it
++  trivially. Every postcondition is proved.
++  Before the 2026-11-04 amendments, the same tool and proofs report `Iter::size_hint` as
++  unproved: Claude's `size_hint` had no postcondition.
++- **Gold ⇒ Claude** (18 inherent functions): 9 proved (`with_capacity`, `len`, `is_empty`,
++  `vacant_key`, `insert`, `try_remove`, `remove`, `iter`, `VacantEntry::key`). The other 9 are real
+   differences:
+   - *Claude's contract is more general:* `contains`, `get` and `clear` have no precondition,
+     while the gold contracts require `valid()`.
+@@ -397,6 +417,7 @@
+ | M20 | `Iter::next_back` yields the key one past the entry | postcondition of `iter_next_back` |
+ | M21 | `iter` starts counting keys at 1 | postcondition of `iter` |
+ | M22 | `index_mut` always returns the value at key 0 | postcondition of `index_mut` |
++| M23 | `Iter::size_hint` counts the slots left, vacant ones included | postcondition of `size_hint` |
+ 
+ M14 is the historical bug behind issue #100, fixed in 5bc6f62 (#102). Verus rejects the pre-fix
+ logic.
+@@ -412,10 +433,19 @@
+ - **`get_mut` docs.** Writing through the returned reference changes `slab[key]`.
+ - **`try_remove` test.** Returns `Some(1)`, then `None`. `contains` is false afterwards.
+ - **`retain` docs.** Given a closure with `ensures keep == (key == k1 || *old(val) == 1)`, the proof shows that `k1` and `k2` stay, `k3` goes, `len() == 2`, and the next `insert` returns `k3`.
++- **Upstream test `retain`, without its `capacity` checks.** The closure asserts `key == *x`, so it is
++  modeled with `requires key == *old(x)` and keeps the assertion as `runtime_assert`. The proof
++  shows that `len()` becomes 1, `slab[key1] == 0`, `key2` is gone, and the next two `insert`s
++  return `key2` and 2. Before the 2026-11-04 amendment, `retain` required `f` to be callable on
++  every key and value, so this call was rejected.
++- **`retain` never adds values.** For any `wf()` slab and any closure, `len()` after `retain` is
++  at most `len()` before. Before the amendment this needed an induction that clients would have had
++  to write themselves.
+ - **Upstream test `from_iterator_issue_100`, first case, through the `Builder`.** The next three `insert`s return 0, 2 and 3.
+ - **`iter` docs.** `next` returns `(0, &0)`, `(1, &1)`, `(2, &2)`, then `None`.
+ - **Upstream test `iter_rev`, with `next_back`.** After `remove(0)`, `len()` is 3, `next_back` returns `(3, &3)`, `(2, &2)` and `(1, &1)`, then `None`, and `len()` is 0.
+ - **A `for` loop over `slab.iter()`.** For any `wf()` slab, each `(key, value)` the loop sees has `slab@[key] == Some(*value)`, and the loop body runs `slab.len()` times.
++- **`Iter::size_hint`.** For any `wf()` slab, `slab.iter().size_hint()` is `(slab.len(), Some(slab.len()))`, and after one `next` both bounds drop by one (or stay 0).
+ - **`slab[key] = 2`.** Afterwards `slab[key] == 2`, and the slab is still `wf()`: the next `insert` returns 1.
+ 
+ ## Porting to Verus 0.2026.10.18
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/compare_specs.py verus_fixed/compare_specs.py
+--- verus/compare_specs.py	2026-10-26 03:51:33.598151304 -0400
++++ verus_fixed/compare_specs.py	2026-11-03 23:54:00.243971336 -0500
+@@ -18,7 +18,11 @@
+   * `x@.valid()` on a slab is read as the gold invariant `slab_rep_ok` (--invariant);
+   * the gold file's `broadcast axiom`s are in force;
+   * an obligation whose gold contract mentions capacity is also checked with capacity removed,
+-    so that "differs only in capacity" is reported separately (Claude's spec never mentions it).
++    so that "differs only in capacity" is reported separately (Claude's spec never mentions it);
++  * a gold `uninterp` placeholder named by `// @interpret <name>` in the proofs file is replaced by
++    the `spec fn <name>` defined there, which reads it in terms of the verified crate. Contracts
++    that use it are then compared instead of skipped. The definition is a modeling choice, not
++    checked against anything, so the report prints it.
+ 
+ Proofs go in a separate file (--proofs): lemmas (`proof fn`) and `proof { }` hint blocks, each
+ after a marker `// @hint <obligation> before|after`. The obligations themselves are generated
+@@ -406,12 +410,8 @@
+                 g.defs.append(it)
+         else:
+             g.defs.append(it)
+-    # which viewed types are placeholders: their view uses an uninterpreted function no axiom covers
+-    g.placeholder_types = set()
+-    for name, it in g.views.items():
+-        used = {toks[j].t for j in range(it.start, it.end)} & g.uninterp
+-        if used - g.axiom_covered:
+-            g.placeholder_types.add(name)
++    g.interpreted = {}
++    compute_placeholders(g)
+     # the fields of each view's model struct (`type V = M<..>;` with `struct M { f: .., .. }`)
+     structs = {toks[it.kw + 1].t: it for it in items if it.kind == 'struct' and it.body}
+     g.model_fields = {}
+@@ -425,6 +425,29 @@
+     return g
+ 
+ 
++def compute_placeholders(g):
++    """Viewed types whose view uses an uninterpreted function that no axiom covers."""
++    g.placeholder_types = set()
++    for name, it in g.views.items():
++        used = {g.toks[j].t for j in range(it.start, it.end)} & g.uninterp
++        if used - g.axiom_covered:
++            g.placeholder_types.add(name)
++
++
++def apply_interpretations(g, proofs):
++    """Replace the gold placeholders named by `// @interpret` with the proofs file's definitions."""
++    for name in proofs['interprets']:
++        if name not in g.uninterp:
++            sys.exit(f'@interpret {name}: not an uninterpreted function of the gold spec')
++        m = re.search(r'^\s*(?:pub\S*\s+)?(?:open\s+|closed\s+)?spec\s+fn\s+' + re.escape(name) + r'\b.*?^\}',
++                      proofs['lemmas'], re.M | re.S)
++        if not m:
++            sys.exit(f'@interpret {name}: the proofs file does not define `spec fn {name}`')
++        g.uninterp.discard(name)
++        g.interpreted[name] = m.group(0).strip()
++    compute_placeholders(g)
++
++
+ def parse_crate(crate):
+     """Verified (in `verus!`) and trusted (outside it) exec fns of the crate, by key."""
+     verified, trusted, field_types = {}, set(), {}
+@@ -717,7 +740,8 @@
+ def generate(gold, verified, trusted, field_types, proofs, invariant, trusted_types=()):
+     gsrc, gtoks = gold.src, gold.toks
+     # gold definitions about types the verified crate leaves trusted cannot be checked
+-    usable = [d for d in gold.defs if not ({gtoks[j].t for j in range(d.start, d.end + 1)} & set(trusted_types))]
++    usable = [d for d in gold.defs if not ({gtoks[j].t for j in range(d.start, d.end + 1)} & set(trusted_types))
++              and not (d.kind == 'fn' and 'uninterp' in d.mods and gtoks[d.kw + 1].t in gold.interpreted)]
+     dropped_types = {t for t in gold.views if t in trusted_types}
+     inv_type = None
+     if invariant:
+@@ -841,10 +865,14 @@
+ 
+ 
+ def read_proofs(path):
+-    lemmas, hints, notes, cur, note = [], {}, {}, None, None
++    lemmas, hints, notes, cur, note, interprets = [], {}, {}, None, None, []
+     if not os.path.exists(path):
+-        return {'lemmas': '', 'hints': {}, 'notes': {}}
++        return {'lemmas': '', 'hints': {}, 'notes': {}, 'interprets': []}
+     for n, l in enumerate(open(path).read().split('\n'), 1):
++        m = re.match(r'\s*//\s*@interpret\s+(\S+)\s*$', l)
++        if m:
++            interprets.append(m.group(1))
++            continue
+         m = re.match(r'\s*//\s*@note\s+(\S+)\s*$', l)
+         if m:
+             note = m.group(1)
+@@ -875,7 +903,8 @@
+     for m in re.finditer(r'^\s*(?:pub\S*\s+)?((?:open |closed )?(?:spec|proof|exec)?\s*fn)\s', lemma_text, re.M):
+         if not re.search(r'(spec|proof)\s*fn', m.group(1)):
+             sys.exit(f'{path}: only `proof fn` and `spec fn` items are allowed: {m.group(0).strip()}')
+-    return {'lemmas': lemma_text, 'hints': hints, 'notes': {k: ' '.join(v) for k, v in notes.items()}}
++    return {'lemmas': lemma_text, 'hints': hints, 'notes': {k: ' '.join(v) for k, v in notes.items()},
++            'interprets': interprets}
+ 
+ # ------------------------------------------------------------------------------ running
+ 
+@@ -884,6 +913,7 @@
+     gold = parse_gold(args.gold)
+     verified, trusted, field_types, trusted_types = parse_crate(args.crate)
+     proofs = read_proofs(args.proofs)
++    apply_interpretations(gold, proofs)
+     g, results = generate(gold, verified, trusted, field_types, proofs, args.invariant, trusted_types)
+     tmp = tempfile.mkdtemp(prefix='compare-specs-')
+     crate = os.path.join(tmp, 'crate')
+@@ -930,18 +960,20 @@
+         if role in ('requires', 'ensures') and msg.startswith('postcondition'):
+             what = f'ensures: {clause}'
+         elif msg.startswith('precondition'):
+-            callee, cur_file, cur_line = None, None, None  # the source line labeled `failed precondition`
++            # the source lines labeled `failed precondition` (a clause may span several lines)
++            callee, cur_file, cur_start, cur_line = None, None, None, None
+             for bl in block.split('\n'):
+                 fm = re.search(r'(?:-->|:::) (\S+):(\d+):\d+', bl)
+                 if fm:
+-                    cur_file = fm.group(1)
++                    cur_file, cur_start = fm.group(1), int(fm.group(2))
+                 lm = re.match(r'\s*(\d+) \|', bl)
+                 if lm:
+                     cur_line = int(lm.group(1))
+                 if 'failed precondition' in bl and cur_file and cur_line:
+                     callee = (cur_file, cur_line)
+                     break
+-            text = read_line(crate, callee[0], callee[1]) if callee else '?'
++            text = ' '.join(read_line(crate, callee[0], l) for l in range(min(cur_start, callee[1]), callee[1] + 1)) \
++                if callee else '?'
+             if callee and callee[0].endswith('gold_check.rs') and g.where.get(callee[1]):
+                 text = g.where[callee[1]][2] or text  # the gold clause as written
+             what = 'requires of the callee: ' + text.rstrip(',')
+@@ -965,9 +997,14 @@
+              '(inherent functions only).',
+              '- Conventions: the gold `View` is renamed `GoldView`; '
+              + (f'`x@.valid()` on a slab is read as `{args.invariant}`; ' if args.invariant else '')
+-             + 'gold axioms in force: ' + (', '.join(f'`{a}`' for a in gold.axioms) or 'none') + '.',
++             + 'gold axioms in force: ' + (', '.join(f'`{a}`' for a in gold.axioms) or 'none') + '.'
++             + (' Gold placeholders read in terms of the verified crate (`@interpret`, a modeling choice, '
++                'not checked): ' + ', '.join(f'`{k}`' for k in gold.interpreted) + '; definitions below.'
++                if gold.interpreted else ''),
+              '- *capacity only*: the obligation fails, but holds once capacity clauses are removed '
+              '(Claude\'s spec says nothing about capacity).', '']
++    for name, text in gold.interpreted.items():
++        lines += [f'Interpretation of the gold placeholder `{name}`:', '', '```rust', text, '```', '']
+     if compile_errors is not None:
+         lines += ['**The generated obligations do not compile or the proofs do not verify:**', '', '```'] + \
+             [e[:1500] for e in compile_errors[:10]] + ['```']
+@@ -1023,7 +1060,7 @@
+ 
+ def main():
+     ap = argparse.ArgumentParser(description='Compare the gold spec with the verified spec.')
+-    ap.add_argument('--gold', default=os.path.join(HERE, 'humen_written_spec.rs'))
++    ap.add_argument('--gold', default=os.path.join(HERE, 'human_written_spec.rs'))
+     ap.add_argument('--crate', default=os.path.join(HERE, 'slab'))
+     ap.add_argument('--proofs', default=os.path.join(HERE, 'spec_proofs.rs'))
+     ap.add_argument('--report', default=os.path.join(HERE, 'spec_comparison.md'))
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/negative_controls.py verus_fixed/negative_controls.py
+--- verus/negative_controls.py	2026-10-26 00:05:51.203665410 -0400
++++ verus_fixed/negative_controls.py	2026-11-03 23:54:33.311777387 -0500
+@@ -79,6 +79,9 @@
+     ("M22", "index_mut always returns the value at key 0", "src/lib.rs",
+      "let value = match vec_get_mut(&mut self.entries, key) {",
+      "let value = match vec_get_mut(&mut self.entries, 0) {"),
++    ("M23", "Iter::size_hint counts the slots left, vacant ones included", "src/lib.rs",
++     "        (self.len, Some(self.len))\n",
++     "        (self.entries.len(), Some(self.entries.len()))\n"),
+ ]
+ 
+ def run(mid, desc, path, old, new, extra=None):
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/slab/README.md verus_fixed/slab/README.md
+--- verus/slab/README.md	2026-10-26 03:25:15.449055408 -0400
++++ verus_fixed/slab/README.md	2026-11-04 00:04:30.220193802 -0500
+@@ -1,6 +1,8 @@
+ # `slab` annotated for Verus
+ 
+ `src/` is slab `master` (7d1d8ab, v0.4.12) with Verus specifications and proofs added in place.
++This is the amended copy (`verus_fixed/`): the specs were reviewed against the human-written
++spec on 2026-11-04, and three contracts were amended. See [`../SPEC_REVIEW.md`](../SPEC_REVIEW.md).
+ Results, contracts, the trusted base and the audited list of code changes are in
+ [`../VERIFICATION.md`](../VERIFICATION.md); the full diff against upstream is
+ [`../upstream.diff`](../upstream.diff).
+@@ -9,7 +11,8 @@
+ - `src/trusted.rs`: upstream code that is trusted, not verified. Verus skips the module
+   (`#[verifier::external]` on its declaration); each item has a `// T<n>: reason` comment.
+ - `src/spec.rs`: the specification (abstract state, invariant, lemmas). Ghost code only; nothing in it is trusted.
+-- `src/std_ext.rs`: verified stand-ins for `<[T]>::get_mut` and `mem::replace`, which vstd does not specify.
++- `src/std_ext.rs`: verified stand-ins for `<[T]>::get_mut` (unspecified in the vstd this crate was
++  first verified with; the current vstd specifies it) and `mem::replace` (still unspecified).
+ - `src/verified_examples.rs`: verified clients that prove documented examples from the contracts.
+ - `src/serde.rs`, `tests/`: unchanged from upstream.
+ 
+@@ -19,7 +22,7 @@
+ - `detect_changes.py`: every change to executable code, against human approvals in
+   `approved_changes.json`; writes `changes_report.md`.
+ - `test_detect_changes.py`: injected edits that `detect_changes.py` must flag or ignore.
+-- `compare_specs.py`: compares the human-written gold spec (`humen_written_spec.rs`) with the
++- `compare_specs.py`: compares the human-written gold spec (`human_written_spec.rs`) with the
+   verified spec, with proofs in `spec_proofs.rs`; writes `spec_comparison.md`.
+ 
+ ## Reproduce
+@@ -27,8 +30,8 @@
+ Verus 0.2026.10.18.7d82994 (bare `verus` binary with its bundled vstd; with 0.2026.05.03, `cargo verus`
+ panicked while compiling the crates.io vstd, and this has not been rechecked). Run from this directory:
+ 
+-    verus --crate-type=lib --no-cheating --cfg 'feature="std"' src/lib.rs   # 94 verified, 0 errors
+-    verus --crate-type=lib --no-cheating src/lib.rs                          # no_std: 94 verified, 0 errors
++    verus --crate-type=lib --no-cheating --cfg 'feature="std"' src/lib.rs   # 98 verified, 0 errors
++    verus --crate-type=lib --no-cheating src/lib.rs                          # no_std: 98 verified, 0 errors
+ 
+ Normal build and the upstream tests (ghost code erased; toolchain pinned to 1.95.0 by `rust-toolchain.toml`):
+ 
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/slab/src/lib.rs verus_fixed/slab/src/lib.rs
+--- verus/slab/src/lib.rs	2026-10-26 01:19:46.813199438 -0400
++++ verus_fixed/slab/src/lib.rs	2026-11-03 23:46:18.755832268 -0500
+@@ -1058,10 +1058,15 @@
+         F: FnMut(usize, &mut T) -> bool,
+         requires
+             old(self).wf(),
+-            forall|key: usize, value: &mut T| f.requires((key, value)),
++            // `f` is only called with an occupied key and a reference to the value stored there.
++            forall|key: usize, value: &mut T|
++                #![trigger f.requires((key, value))]
++                old(self).spec_contains(key) && *value == old(self)@[key as int]->Some_0
++                    ==> f.requires((key, value)),
+         ensures
+             final(self).wf(),
+             final(self)@.len() == old(self)@.len(),
++            num_occupied(final(self)@) <= num_occupied(old(self)@),
+             forall|k: int|
+                 0 <= k < old(self)@.len() && (#[trigger] old(self)@[k]) is None ==> final(self)@[k] is None,
+             forall|k: int|
+@@ -1088,7 +1093,11 @@
+             invariant
+                 iter.snapshot.end == pre@.len(),
+                 f == f0,
+-                forall|key: usize, value: &mut T| f.requires((key, value)),
++                forall|key: usize, value: &mut T|
++                    #![trigger f.requires((key, value))]
++                    pre.spec_contains(key) && *value == pre@[key as int]->Some_0 ==> f.requires(
++                        (key, value),
++                    ),
+                 self.wf(),
+                 self@.len() == pre@.len(),
+                 forall|k: int| i <= k < pre@.len() ==> (#[trigger] self@[k]) == pre@[k],
+@@ -1136,6 +1145,9 @@
+                 }
+             }
+         }
++        proof {
++            lemma_num_occupied_vacated(pre@, self@);
++        }
+     }
+ }
+ 
+@@ -1325,7 +1337,14 @@
+         iter_next(&mut self.entries, &mut self.front, &mut self.len)
+     }
+ 
+-    fn size_hint(&self) -> (usize, Option<usize>) {
++    fn size_hint(&self) -> (r: (usize, Option<usize>))
++        ensures
++            r.0 == self.remaining().len(),
++            r.1 == Some(r.0),
++    {
++        proof {
++            use_type_invariant(self);
++        }
+         (self.len, Some(self.len))
+     }
+ }
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/slab/src/spec.rs verus_fixed/slab/src/spec.rs
+--- verus/slab/src/spec.rs	2026-10-26 00:02:10.691760173 -0400
++++ verus_fixed/slab/src/spec.rs	2026-11-03 23:46:25.339768756 -0500
+@@ -737,6 +737,26 @@
+     }
+ }
+ 
++/// Vacating slots does not raise the count: if every slot vacant in `pre` is vacant in `post`,
++/// `post` has at most as many occupied slots as `pre`.
++pub proof fn lemma_num_occupied_vacated<T>(pre: Seq<Option<T>>, post: Seq<Option<T>>)
++    requires
++        post.len() == pre.len(),
++        forall|k: int| 0 <= k < pre.len() && (#[trigger] pre[k]) is None ==> post[k] is None,
++    ensures
++        num_occupied(post) <= num_occupied(pre),
++    decreases pre.len(),
++{
++    if pre.len() > 0 {
++        let (t1, t2) = (pre.drop_last(), post.drop_last());
++        assert forall|k: int| 0 <= k < t1.len() && (#[trigger] t1[k]) is None implies t2[k] is None by {
++            assert(pre[k] is None);
++        }
++        lemma_num_occupied_vacated(t1, t2);
++        assert(pre.last() is None ==> post.last() is None);
++    }
++}
++
+ // ================================================================ in-place value updates
+ 
+ /// `s` differs from `t` at most in the values held by occupied entries.
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/slab/src/verified_examples.rs verus_fixed/slab/src/verified_examples.rs
+--- verus/slab/src/verified_examples.rs	2026-10-26 00:03:45.582452408 -0400
++++ verus_fixed/slab/src/verified_examples.rs	2026-11-04 00:10:20.806549817 -0500
+@@ -8,6 +8,7 @@
+ use crate::builder::Builder;
+ use crate::spec::*;
+ use crate::Slab;
++use vstd::pervasive::runtime_assert;
+ use vstd::prelude::*;
+ use vstd::std_specs::iter::IteratorSpec;
+ 
+@@ -136,6 +137,79 @@
+     assert(k == k3);
+ }
+ 
++/// Upstream test `retain` (without its `capacity` checks, which have no spec). Its closure asserts
++/// `key == *x`, so it may only be called with a key and the value stored under it. `retain`
++/// requires `f` to be callable on exactly those arguments, so the call is allowed.
++fn example_retain_upstream_test() {
++    let mut slab: Slab<usize> = Slab::with_capacity(2);
++
++    let key1 = slab.insert(0);
++    let key2 = slab.insert(1);
++
++    let f = |key: usize, x: &mut usize| -> (keep: bool)
++        requires
++            key == *old(x),
++        ensures
++            keep == (*old(x) % 2 == 0),
++            *final(x) == *old(x),
++        {
++            runtime_assert(key == *x);
++            *x % 2 == 0
++        };
++    let ghost pre = slab@;
++    proof {
++        assert(pre =~= seq![Some(0usize), Some(1usize)]);
++    }
++    slab.retain(f);
++
++    proof {
++        assert(retain_step(f, 0, 0, slab@[0]));
++        assert(retain_step(f, 1, 1, slab@[1]));
++        assert(slab@ =~= seq![Some(0usize), None]);
++        reveal_with_fuel(num_occupied, 3);
++        assert(slab@.drop_last() =~= seq![Some(0usize)]);
++        assert(slab@.drop_last().drop_last() =~= Seq::<Option<usize>>::empty());
++    }
++    let len = slab.len();
++    assert(len == 1);
++    let v = slab[key1];
++    assert(v == 0);
++    let c = slab.contains(key2);
++    assert(!c);
++
++    // Ensure consistency is retained
++    proof {
++        reveal_with_fuel(removed_keys_desc, 3);
++        assert(removed_keys_desc(pre, slab@, 2) =~= seq![1usize]);
++    }
++    let key = slab.insert(123);
++    assert(key == key2);
++    let len = slab.len();
++    proof {
++        assert(slab@ =~= seq![Some(0usize), Some(123usize)]);
++        assert(slab@.drop_last() =~= seq![Some(0usize)]);
++    }
++    assert(len == 2);
++
++    // Inserting another element grows
++    let key = slab.insert(345);
++    assert(key == 2);
++}
++
++/// Whatever the closure decides, `retain` never leaves more values than it started with.
++fn example_retain_len<F: FnMut(usize, &mut u64) -> bool>(slab: &mut Slab<u64>, f: F)
++    requires
++        old(slab).wf(),
++        forall|key: usize, value: &mut u64|
++            old(slab).spec_contains(key) && *value == old(slab)@[key as int]->Some_0
++                ==> f.requires((key, value)),
++{
++    let before = slab.len();
++    slab.retain(f);
++    let after = slab.len();
++    assert(after <= before);
++}
++
+ /// Upstream test `from_iterator_issue_100` (first case): pairs `[(1, ())]`, built through the
+ /// `Builder` that `FromIterator` uses. Before #102 the first insertion after this returned 0
+ /// but left the vacant list pointing at 0 again.
+@@ -254,6 +328,28 @@
+     assert(count == len);
+ }
+ 
++/// `Iter::size_hint` is exact: both bounds are the number of values left, before and after `next`.
++fn example_iter_size_hint(slab: &Slab<u64>)
++    requires
++        slab.wf(),
++{
++    proof {
++        lemma_occupied_pairs_len(slab@, 0);
++    }
++    let len = slab.len();
++    let mut it = slab.iter();
++    let (lo, hi) = it.size_hint();
++    assert(lo == len && hi == Some(len));
++
++    let first = it.next();
++    let (lo, hi) = it.size_hint();
++    if len > 0 {
++        assert(first is Some && lo == len - 1 && hi == Some(lo));
++    } else {
++        assert(first is None && lo == 0 && hi == Some(0usize));
++    }
++}
++
+ /// `slab[key] = value` stores the value, and the slab stays usable.
+ fn example_index_mut() {
+     let mut slab: Slab<u64> = Slab::new();
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/spec_proofs.rs verus_fixed/spec_proofs.rs
+--- verus/spec_proofs.rs	2026-10-26 03:55:29.766352913 -0400
++++ verus_fixed/spec_proofs.rs	2026-11-03 23:53:20.747882794 -0500
+@@ -426,25 +426,6 @@
+ 
+ // =========================================================================== retain
+ 
+-// A slot vacant before stays vacant, so the number of values cannot grow.
+-proof fn lemma_num_occupied_le<T>(pre: Seq<Option<T>>, post: Seq<Option<T>>)
+-    requires
+-        post.len() == pre.len(),
+-        forall|k: int| 0 <= k < pre.len() && (#[trigger] pre[k]) is None ==> post[k] is None,
+-    ensures
+-        num_occupied(post) <= num_occupied(pre),
+-    decreases pre.len(),
+-{
+-    if pre.len() > 0 {
+-        assert(pre[pre.len() - 1] is None ==> post[pre.len() - 1] is None);
+-        assert forall|k: int| 0 <= k < pre.drop_last().len() && (#[trigger] pre.drop_last()[k]) is None
+-            implies post.drop_last()[k] is None by {
+-            assert(pre[k] is None);
+-        }
+-        lemma_num_occupied_le(pre.drop_last(), post.drop_last());
+-    }
+-}
+-
+ // The keys below `n` that `p` selects, in decreasing order, are Claude's `removed_keys_desc`.
+ proof fn lemma_removed_keys<T>(pre: Seq<Option<T>>, post: Seq<Option<T>>, n: int, p: spec_fn(int) -> bool)
+     requires
+@@ -475,7 +456,8 @@
+     }
+ }
+ 
+-// Claude's retain postcondition gives the gold one, with the events read off the final slab.
++// Claude's retain postcondition gives the gold one, with the events read off the final slab. (The
++// gold occupied-count clause needs no proof here: Claude's contract states it.)
+ proof fn lemma_retain_gold<T>(pre: Slab<T>, post: Slab<T>)
+     requires
+         pre.wf(),
+@@ -484,7 +466,6 @@
+         forall|k: int| 0 <= k < pre@.len() && (#[trigger] pre@[k]) is None ==> post@[k] is None,
+         post.vacant_list() == removed_keys_desc(pre@, post@, pre@.len() as int) + pre.vacant_list(),
+     ensures
+-        post.gv().occupied_count() <= pre.gv().occupied_count(),
+         exists|events: Seq<Option<RetainEvent<T>>>|
+             pre.gv().retain_events_valid(events) && post.gv().slots == pre.gv().retained(events).slots
+                 && post.gv().free == pre.gv().retained(events).free,
+@@ -493,7 +474,6 @@
+     lemma_wf_gold(post);
+     pre.lemma_vacant_list();
+     let (a, b) = (pre@, post@);
+-    lemma_num_occupied_le(a, b);
+     let events = Seq::new(
+         a.len(),
+         |k: int|
+@@ -549,6 +529,98 @@
+     lemma_ints_injective(post.vacant_list(), rk + pre.vacant_list());
+ }
+ 
++// ============================================================================== Iter
++
++// The gold `Iter` model read in terms of the verified crate: the `(key, &value)` pairs of Claude's
++// `remaining()`, with keys as `int` and values dereferenced. It is written with `iter_items` of
++// the fields, which is the body of `remaining()`, because `remaining()` is prophetic and a gold
++// view must not be.
++// @interpret iter_remaining
++pub(crate) closed spec fn iter_remaining<'a, T>(it: &crate::Iter<'a, T>) -> Seq<(int, T)> {
++    iter_items(it.entries@, it.front).map_values(|p: (usize, &T)| (p.0 as int, *p.1))
++}
++
++// Claude's `(key, value)` pairs with `int` keys, as the gold model lists them.
++spec fn int_pairs<T>(p: Seq<(usize, T)>) -> Seq<(int, T)> {
++    p.map_values(|q: (usize, T)| (q.0 as int, q.1))
++}
++
++// Claude's pairs of the occupied slots below `n` are the gold pairs of those slots.
++proof fn lemma_iter_pairs<T>(m: SlabModel<T>, n: int)
++    requires
++        0 <= n <= m.slots.len(),
++        m.slots.len() <= usize::MAX,
++    ensures
++        int_pairs(occupied_pairs(m.slots.subrange(0, n), 0)) == Seq::new(n as nat, |i: int| i).filter(
++            |i: int| m.slots[i].is_some(),
++        ).map_values(|i: int| (i, m.slots[i].unwrap())),
++    decreases n,
++{
++    reveal(Seq::filter);
++    let s = Seq::new(n as nat, |i: int| i);
++    let f = |i: int| (i, m.slots[i].unwrap());
++    if n > 0 {
++        lemma_iter_pairs(m, n - 1);
++        let s0 = Seq::new((n - 1) as nat, |i: int| i);
++        assert(s.drop_last() =~= s0);
++        let f0 = s0.filter(|i: int| m.slots[i].is_some());
++        let sub0 = m.slots.subrange(0, n - 1);
++        assert(m.slots.subrange(0, n).drop_last() =~= sub0);
++        let head = occupied_pairs(sub0, 0);
++        if m.slots[n - 1].is_some() {
++            assert(s.filter(|i: int| m.slots[i].is_some()) == f0.push(n - 1));
++            assert(f0.push(n - 1).map_values(f) =~= f0.map_values(f).push(f(n - 1)));
++            assert(int_pairs(head + seq![((n - 1) as usize, m.slots[n - 1].unwrap())]) =~= int_pairs(
++                head,
++            ).push(f(n - 1)));
++        } else {
++            assert(s.filter(|i: int| m.slots[i].is_some()) == f0);
++            assert(head + Seq::<(usize, T)>::empty() =~= head);
++        }
++    } else {
++        assert(int_pairs(occupied_pairs(m.slots.subrange(0, 0), 0)) =~= Seq::<(int, T)>::empty());
++    }
++}
++
++// The gold pairs of a slab are Claude's `occupied_pairs`, with `int` keys.
++proof fn lemma_gold_pairs<T>(s: Slab<T>)
++    requires
++        s.wf(),
++    ensures
++        s.gv().pairs() == int_pairs(occupied_pairs(s@, 0)),
++{
++    lemma_wf_gold(s);
++    s.lemma_len_bound();
++    let m = s.gv();
++    lemma_iter_pairs(m, m.slots.len() as int);
++    assert(m.slots.subrange(0, m.slots.len() as int) =~= m.slots);
++}
++
++// Claude's items of an `Iter`, read as the gold model.
++proof fn lemma_iter_remaining<'a, T>(it: Iter<'a, T>, pairs: Seq<(usize, T)>)
++    requires
++        iter_items(it.entries@, it.front) == ref_pairs::<'a, T>(pairs),
++    ensures
++        iter_remaining(&it) == int_pairs(pairs),
++{
++    assert(iter_remaining(&it) =~= int_pairs(pairs));
++}
++
++// The gold model of an `Iter`, read back as Claude's items.
++proof fn lemma_iter_remaining_inv<'a, T>(it: Iter<'a, T>, pairs: Seq<(usize, T)>)
++    requires
++        iter_remaining(&it) == int_pairs(pairs),
++    ensures
++        iter_items(it.entries@, it.front) == ref_pairs::<'a, T>(pairs),
++{
++    let items = iter_items(it.entries@, it.front);
++    assert(iter_remaining(&it).len() == items.len());
++    assert forall|i: int| 0 <= i < items.len() implies items[i] == ref_pairs::<'a, T>(pairs)[i] by {
++        assert(iter_remaining(&it)[i] == int_pairs(pairs)[i]);
++    }
++    assert(items =~= ref_pairs::<'a, T>(pairs));
++}
++
+ // ================================================================================ notes
+ 
+ // @note gold_implies_claude__Slab__new
+@@ -586,14 +658,15 @@
+ // value it leaves decide the slot (`f.ensures`). The vacant-list clause is proved.
+ 
+ // @note claude_implies_gold__Slab__retain
+-// Claude's `retain` requires `f.requires((key, value))` for every key and value: Verus can only
+-// call a closure whose precondition holds. A closure without a `requires` clause meets it
+-// trivially, so leaving it out of the gold spec is harmless. Apart from this, only the capacity
+-// clauses fail.
++// Claude's `retain` requires `f.requires((key, value))` for each occupied key and a reference to
++// the value stored there: the arguments `retain` passes. Verus can only call a closure whose
++// precondition holds, so some such clause is unavoidable, and this one is the weakest. The gold
++// contract has none. A closure without a `requires` clause meets it trivially. Apart from this,
++// only the capacity clauses fail.
+ 
+ // @note claude_implies_gold__Slab__retain__nocap
+-// Only the closure precondition fails (see the full obligation). The postconditions are proved,
+-// with the events read off the final slab.
++// Only the closure precondition fails (see the full obligation). The postconditions are proved:
++// the occupied count from Claude's own count clause, the events read off the final slab.
+ 
+ // @note gold_implies_claude__VacantEntry__insert
+ // The gold contract only gives `*r == val`; its own comment notes that the insertion into the
+@@ -644,3 +717,15 @@
+ proof {
+     lemma_ints_injective_all();
+ }
++
++// @hint claude_implies_gold__Slab__iter after
++proof {
++    lemma_gold_pairs(*slf);
++    lemma_iter_remaining(ret, occupied_pairs(slf@, 0));
++}
++
++// @hint gold_implies_claude__Slab__iter after
++proof {
++    lemma_gold_pairs(*slf);
++    lemma_iter_remaining_inv(ret, occupied_pairs(slf@, 0));
++}
+diff -ruN '--exclude=target' '--exclude=upstream.diff' '--exclude=changes_report.md' '--exclude=spec_comparison.md' '--exclude=SPEC_REVIEW.md' '--exclude=amendments.diff' verus/vstd_probe.rs verus_fixed/vstd_probe.rs
+--- verus/vstd_probe.rs	1969-12-31 19:00:00.000000000 -0500
++++ verus_fixed/vstd_probe.rs	2026-11-04 00:05:58.378486931 -0500
+@@ -0,0 +1,80 @@
++// Which std methods the bundled vstd lets verified code call under `--no-cheating`.
++// SPEC_REVIEW.md uses this to tell contracts that are missing by choice from contracts that cannot
++// be written yet. Run from verus_fixed/:
++//
++//     verus --no-cheating vstd_probe.rs
++//     verus --no-cheating --cfg probe_clone_from vstd_probe.rs
++//
++// Expected with Verus 0.2026.10.18.7d82994: the first command reports "is not supported" for
++// exactly the 8 calls marked UNSUPPORTED below, and none for the 3 marked SUPPORTED. The second
++// command stops earlier, at "Verus does not yet support `clone_from`".
++use vstd::prelude::*;
++
++verus! {
++
++// UNSUPPORTED: `capacity`, `reserve` and `reserve_exact` of `Slab` need it, and every capacity
++// clause of the human spec does.
++fn vec_capacity(v: &Vec<u8>) -> usize {
++    v.capacity()
++}
++
++// UNSUPPORTED: `Slab::reserve_exact`.
++fn vec_reserve_exact(v: &mut Vec<u8>) {
++    v.reserve_exact(3);
++}
++
++// UNSUPPORTED: `Slab::shrink_to_fit` and `Slab::compact`.
++fn vec_shrink_to_fit(v: &mut Vec<u8>) {
++    v.shrink_to_fit();
++}
++
++// UNSUPPORTED (2 errors: the method and the `Drain` type): `Slab::drain` and `Drain`.
++fn vec_drain(v: &mut Vec<u8>) {
++    let _ = v.drain(..);
++}
++
++// UNSUPPORTED: `Slab::get_unchecked` and `Slab::get_unchecked_mut`.
++fn slice_get_unchecked(s: &[u8]) -> u8
++    requires
++        s@.len() > 0,
++{
++    unsafe { *s.get_unchecked(0) }
++}
++
++// UNSUPPORTED: `try_remove` uses the verified stand-in `std_ext::mem_replace` instead.
++fn mem_replace(x: &mut u8) {
++    let _ = core::mem::replace(x, 3u8);
++}
++
++// UNSUPPORTED: vstd's iterator specification has no `size_hint`, so `Iter::size_hint` must state
++// its own contract (amendment A1 in SPEC_REVIEW.md).
++fn iter_size_hint(v: &Vec<u8>) {
++    let it = v.iter();
++    let _ = it.size_hint();
++}
++
++// SUPPORTED (positive control).
++fn vec_reserve(v: &mut Vec<u8>) {
++    v.reserve(3);
++}
++
++// SUPPORTED (positive control): the `vec_get_mut`/`slice_get_mut` stand-ins are no longer needed.
++fn slice_get_mut(s: &mut [u8]) {
++    let _ = s.get_mut(0);
++}
++
++// SUPPORTED (positive control).
++fn vec_clone(w: &Vec<u8>) -> Vec<u8> {
++    w.clone()
++}
++
++// `Clone for Slab` needs it (with `--cfg probe_clone_from`).
++#[cfg(probe_clone_from)]
++fn vec_clone_from(v: &mut Vec<u8>, w: &Vec<u8>) {
++    v.clone_from(w);
++}
++
++fn main() {
++}
++
++} // verus!
